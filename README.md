@@ -46,6 +46,63 @@ python3 main.py
 python main.py
 ```
 
+This interactive mode now asks for both the number of emails and the generation mode.
+
+If you prefer the CLI directly:
+
+```bash
+python3 cli.py generate --count 25 --mode old-account
+python3 cli.py generate --count 5 --mode fresh-account
+```
+
+- `old-account`: current bulk mode. Generates emails as fast as possible and does not try to stay under Apple's rate limit.
+- `fresh-account`: slower mode for newer accounts. It makes one generation attempt in each 12-minute window, at a random time between minute 5 and 12, which keeps it around 5 attempts per hour.
+
+## Multiple accounts
+
+You can also manage multiple iCloud accounts in parallel with a JSON config file.
+
+Create an `accounts.json` file from [`accounts.example.json`](./accounts.example.json):
+
+```json
+[
+  {
+    "name": "fresh-main",
+    "cookie_file": "cookies/fresh-main.txt",
+    "mode": "fresh-account",
+    "count": 5
+  },
+  {
+    "name": "old-bulk",
+    "cookie_file": "cookies/old-bulk.txt",
+    "mode": "old-account",
+    "count": 25
+  }
+]
+```
+
+Notes:
+
+- `cookie_file` is required.
+- `mode` is optional. If it is omitted for an account, the CLI `--mode` value is used. That global value defaults to `old-account`.
+- `count` is optional. If it is omitted for an account, the CLI `--count` value is used instead.
+- Relative `cookie_file` paths are resolved from the folder that contains `accounts.json`.
+
+Generate with multiple accounts:
+
+```bash
+python3 cli.py generate --accounts-file accounts.json --count 5
+```
+
+Each account runs with its own cookie file and its own mode. If an account has its own `count`, that value overrides the CLI `--count`.
+
+List emails across multiple accounts:
+
+```bash
+python3 cli.py list --accounts-file accounts.json
+python3 cli.py list --accounts-file accounts.json --export all_accounts.csv
+```
+
 ## Getting iCloud cookie string
 
 > There is more than one way how you can get the required cookie string but this one is _imo_ the simplest...
