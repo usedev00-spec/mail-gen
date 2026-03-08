@@ -105,8 +105,6 @@ python3 cli.py list --accounts-file accounts.json --export all_accounts.csv
 
 ## Updating an existing clone
 
-If someone already cloned your GitHub repo, they can update their local copy with:
-
 ```bash
 git checkout main
 git pull --ff-only origin main
