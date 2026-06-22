@@ -3,6 +3,7 @@ import builtins
 import csv
 import datetime
 import json
+import math
 import os
 import random
 import re
@@ -11,9 +12,8 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from rich.console import Console
-from rich.prompt import IntPrompt, Prompt
+from rich.prompt import FloatPrompt, IntPrompt, Prompt
 from rich.table import Table
-from rich.text import Text
 
 from icloud import HideMyEmail
 
@@ -21,43 +21,124 @@ from icloud import HideMyEmail
 DEFAULT_COOKIE_FILE = "cookie.txt"
 DEFAULT_ACCOUNTS_FILE = "accounts.json"
 DEFAULT_EMAILS_FILE = "emails.txt"
-MAX_CONCURRENT_TASKS = 10
-OLD_ACCOUNT_MODE = "old-account"
-FRESH_ACCOUNT_MODE = "fresh-account"
-FRESH_ACCOUNT_SLOT_SECONDS = 12 * 60
-FRESH_ACCOUNT_MIN_DELAY_SECONDS = 5 * 60
-FRESH_ACCOUNT_MAX_DELAY_SECONDS = 12 * 60
-GENERATION_MODE_ALIASES = {
-    "old-account": OLD_ACCOUNT_MODE,
-    "old-acc": OLD_ACCOUNT_MODE,
-    "old": OLD_ACCOUNT_MODE,
-    "fresh-account": FRESH_ACCOUNT_MODE,
-    "fresh-acc": FRESH_ACCOUNT_MODE,
-    "fresh": FRESH_ACCOUNT_MODE,
-}
+
+# Safety limits that keep an iCloud account from being flagged. These are the
+# real-world ceilings observed when generating HideMyEmail aliases.
+MAX_PER_HOUR = 5
+MAX_PER_DAY = 25
+# Comfortable default pace used to suggest a run duration (aliases per hour).
+COMFORTABLE_PER_HOUR = 4
+# Never fire two generations closer than this, even when no rolling limit binds.
+MIN_GAP_SECONDS = 90
+# Small buffer added on top of the rolling windows so we stay strictly under.
+SCHEDULE_GAP_BUFFER_SECONDS = 30
+
+HOUR_SECONDS = 60 * 60
+DAY_SECONDS = 24 * HOUR_SECONDS
 
 
 @dataclass
 class AccountConfig:
     name: str
     cookie_file: str
-    mode: str = OLD_ACCOUNT_MODE
     count: Optional[int] = None
+    daily_limit: int = MAX_PER_DAY
+    duration_hours: Optional[float] = None
 
 
-def normalize_generation_mode(
-    mode: Optional[str], default: str = OLD_ACCOUNT_MODE
-) -> str:
-    if mode is None:
-        return default
+def format_duration(seconds: float) -> str:
+    total_seconds = max(0, int(round(seconds)))
+    minutes, remaining_seconds = divmod(total_seconds, 60)
+    hours, remaining_minutes = divmod(minutes, 60)
+    days, remaining_hours = divmod(hours, 24)
 
-    normalized = mode.strip().lower()
-    if normalized in GENERATION_MODE_ALIASES:
-        return GENERATION_MODE_ALIASES[normalized]
+    if days:
+        return f"{days}d {remaining_hours}h {remaining_minutes}m"
+    if hours:
+        return f"{hours}h {remaining_minutes}m {remaining_seconds}s"
+    if minutes:
+        return f"{minutes}m {remaining_seconds}s"
+    return f"{remaining_seconds}s"
 
-    raise ValueError(
-        'Invalid generation mode. Use "old-account" or "fresh-account".'
-    )
+
+def minimum_safe_duration_seconds(count: int, daily_limit: int) -> float:
+    """Shortest run that still respects MAX_PER_HOUR and the daily limit.
+
+    Computed by packing the generations as early as the rolling-window limits
+    allow (the schedule with a zero-length window), so it accounts for the
+    combined hour/day constraints exactly.
+    """
+    if count <= 1:
+        return 0.0
+    schedule = build_generation_schedule(count, 0.0, daily_limit)
+    return schedule[-1] if schedule else 0.0
+
+
+def suggested_duration_hours(count: int, daily_limit: int) -> float:
+    """A comfortable, human run length for `count` aliases (in hours)."""
+    if count <= 1:
+        return 1.0
+    comfortable = count / COMFORTABLE_PER_HOUR
+    min_safe = minimum_safe_duration_seconds(count, daily_limit) / HOUR_SECONDS
+    return float(max(1, math.ceil(max(comfortable, min_safe))))
+
+
+def build_generation_schedule(
+    count: int, duration_seconds: float, daily_limit: int
+) -> list[float]:
+    """Offsets (seconds from start) for `count` generations.
+
+    Guarantees at most MAX_PER_HOUR per rolling hour and `daily_limit` per
+    rolling day, while spreading the work across `duration_seconds` with random,
+    human-looking timing. If the window is too short to stay safe, the schedule
+    is automatically extended past it.
+    """
+    offsets: list[float] = []
+    slot = duration_seconds / count if count > 0 else 0.0
+    for i in range(count):
+        # Human target: a random point inside this alias' time slot.
+        target = i * slot + random.uniform(0.2, 0.9) * slot
+        earliest = 0.0
+        if i >= MAX_PER_HOUR:
+            earliest = max(
+                earliest,
+                offsets[i - MAX_PER_HOUR] + HOUR_SECONDS + SCHEDULE_GAP_BUFFER_SECONDS,
+            )
+        if i >= daily_limit:
+            earliest = max(
+                earliest,
+                offsets[i - daily_limit] + DAY_SECONDS + SCHEDULE_GAP_BUFFER_SECONDS,
+            )
+        if offsets:
+            earliest = max(earliest, offsets[-1] + MIN_GAP_SECONDS)
+        offsets.append(max(target, earliest))
+    return offsets
+
+
+def analyze_plan(
+    count: int, duration_seconds: float, daily_limit: int
+) -> list[str]:
+    """Human-readable warnings for an unsafe generation plan (empty if safe)."""
+    warnings: list[str] = []
+
+    if count > 1:
+        min_safe = minimum_safe_duration_seconds(count, daily_limit)
+        if duration_seconds < min_safe:
+            window = "instant" if duration_seconds <= 0 else format_duration(duration_seconds)
+            warnings.append(
+                f"The requested {window} window is too short to stay within "
+                f"{MAX_PER_HOUR}/hour and {daily_limit}/day. The run will be "
+                f"automatically extended to about {format_duration(min_safe)} "
+                "to protect the account."
+            )
+
+    if daily_limit > MAX_PER_DAY:
+        warnings.append(
+            f"Daily limit of {daily_limit} exceeds the recommended {MAX_PER_DAY}/day; "
+            "higher values increase the risk of the iCloud account being flagged."
+        )
+
+    return warnings
 
 
 def resolve_config_path(base_dir: str, path: str) -> str:
@@ -83,10 +164,39 @@ def parse_account_count(value: Any, fallback: Optional[int], index: int) -> Opti
     return value
 
 
+def parse_account_daily_limit(value: Any, fallback: int, index: int) -> int:
+    if value is None:
+        return fallback
+
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(
+            f'Account #{index} has an invalid "daily_limit". It must be a '
+            "positive integer."
+        )
+
+    return value
+
+
+def parse_account_duration_hours(
+    value: Any, fallback: Optional[float], index: int
+) -> Optional[float]:
+    if value is None:
+        return fallback
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        raise ValueError(
+            f'Account #{index} has an invalid "duration_hours". It must be a '
+            "non-negative number."
+        )
+
+    return float(value)
+
+
 def load_accounts_config(
     accounts_file: str,
     default_count: Optional[int] = None,
-    default_mode: str = OLD_ACCOUNT_MODE,
+    default_daily_limit: int = MAX_PER_DAY,
+    default_duration_hours: Optional[float] = None,
 ) -> list[AccountConfig]:
     try:
         with open(accounts_file, "r", encoding="utf-8") as f:
@@ -138,19 +248,23 @@ def load_accounts_config(
         else:
             account_name = account_name.strip()
 
-        account_mode = normalize_generation_mode(
-            item.get("mode"), default_mode
-        )
         account_count = parse_account_count(
             item.get("count"), default_count, index
+        )
+        account_daily_limit = parse_account_daily_limit(
+            item.get("daily_limit"), default_daily_limit, index
+        )
+        account_duration_hours = parse_account_duration_hours(
+            item.get("duration_hours"), default_duration_hours, index
         )
 
         accounts.append(
             AccountConfig(
                 name=account_name,
                 cookie_file=cookie_file,
-                mode=account_mode,
                 count=account_count,
+                daily_limit=account_daily_limit,
+                duration_hours=account_duration_hours,
             )
         )
 
@@ -294,26 +408,8 @@ class RichHideMyEmail(HideMyEmail):
         self._log(f"[bold red][ERR][/] - {err_msg}")
         return False
 
-    def _prompt_generation_mode(self) -> str:
-        return normalize_generation_mode(
-            Prompt.ask(
-                "Generation mode",
-                choices=[OLD_ACCOUNT_MODE, FRESH_ACCOUNT_MODE],
-                default=OLD_ACCOUNT_MODE,
-                console=self.console,
-            )
-        )
-
     def _format_duration(self, seconds: float) -> str:
-        total_seconds = max(0, int(round(seconds)))
-        minutes, remaining_seconds = divmod(total_seconds, 60)
-        hours, remaining_minutes = divmod(minutes, 60)
-
-        if hours:
-            return f"{hours}h {remaining_minutes}m {remaining_seconds}s"
-        if minutes:
-            return f"{minutes}m {remaining_seconds}s"
-        return f"{remaining_seconds}s"
+        return format_duration(seconds)
 
     def _format_error_message(self, response: dict) -> str:
         error = response["error"] if "error" in response else {}
@@ -388,68 +484,47 @@ class RichHideMyEmail(HideMyEmail):
         self._log(f'[100%] "{email}" - Successfully reserved')
         return email
 
-    async def _generate_batch(self, num: int) -> list[str]:
-        tasks = []
-        for _ in range(num):
-            tasks.append(asyncio.create_task(self._generate_one()))
+    async def _countdown(self, status, index, total, target_monotonic) -> None:
+        """Tick a live, second-by-second countdown until ``target_monotonic``."""
+        target_clock = (
+            datetime.datetime.now()
+            + datetime.timedelta(seconds=max(0.0, target_monotonic - time.monotonic()))
+        ).strftime("%H:%M:%S")
+        while True:
+            remaining = target_monotonic - time.monotonic()
+            if remaining <= 0:
+                break
+            status.update(
+                f"[bold green]Next alias [{index + 1}/{total}] at {target_clock}[/] "
+                f"— [bold]{self._format_duration(remaining)}[/] remaining"
+            )
+            await asyncio.sleep(min(1.0, remaining))
 
-        results = await asyncio.gather(*tasks)
-        return [email for email in results if email is not None]
-
-    async def _generate_with_old_account_mode(
-        self, count: int, show_status: bool = True
+    async def _run_schedule(
+        self, schedule: list[float], show_status: bool = True
     ) -> list[str]:
-        async def run_batches() -> list[str]:
-            emails = []
-            remaining = count
-            while remaining > 0:
-                batch = await self._generate_batch(
-                    remaining if remaining < MAX_CONCURRENT_TASKS else MAX_CONCURRENT_TASKS
-                )
-                remaining -= MAX_CONCURRENT_TASKS
-                emails.extend(batch)
-            return emails
-
-        if show_status:
-            with self.console.status("[bold green]Generating iCloud email(s)..."):
-                return await run_batches()
-        return await run_batches()
-
-    async def _generate_with_fresh_account_mode(
-        self, count: int, show_status: bool = True
-    ) -> list[str]:
-        emails = []
+        emails: list[str] = []
+        total = len(schedule)
         started_at = time.monotonic()
-        estimated_duration = count * FRESH_ACCOUNT_SLOT_SECONDS
 
-        self._log(
-            "Fresh-account mode enabled: one generation attempt will be made "
-            "in each 12-minute window, at a random time between minute 5 and 12."
-        )
-        self._log(
-            f"Estimated total duration: up to about {self._format_duration(estimated_duration)}."
-        )
-
-        async def run_attempts() -> list[str]:
-            for index in range(count):
-                slot_start = started_at + (index * FRESH_ACCOUNT_SLOT_SECONDS)
-                target_time = slot_start + random.uniform(
-                    FRESH_ACCOUNT_MIN_DELAY_SECONDS,
-                    FRESH_ACCOUNT_MAX_DELAY_SECONDS,
-                )
-                wait_seconds = max(0, target_time - time.monotonic())
+        async def run_attempts(status=None) -> list[str]:
+            for index, offset in enumerate(schedule):
+                target_monotonic = started_at + offset
+                wait_seconds = target_monotonic - time.monotonic()
 
                 if wait_seconds > 0:
-                    target_clock = (
-                        datetime.datetime.now()
-                        + datetime.timedelta(seconds=wait_seconds)
-                    ).strftime("%H:%M:%S")
-                    self._log(
-                        f"[{index + 1}/{count}] Waiting "
-                        f"{self._format_duration(wait_seconds)} before the next "
-                        f'generation attempt (target {target_clock}).'
-                    )
-                    await asyncio.sleep(wait_seconds)
+                    if status is not None:
+                        await self._countdown(status, index, total, target_monotonic)
+                    else:
+                        target_clock = (
+                            datetime.datetime.now()
+                            + datetime.timedelta(seconds=wait_seconds)
+                        ).strftime("%H:%M:%S")
+                        self._log(
+                            f"[{index + 1}/{total}] Next alias at {target_clock} "
+                            f"(in {self._format_duration(wait_seconds)})."
+                        )
+                        await asyncio.sleep(wait_seconds)
 
                 email = await self._generate_one()
                 if email is not None:
@@ -458,14 +533,45 @@ class RichHideMyEmail(HideMyEmail):
             return emails
 
         if show_status:
-            with self.console.status("[bold green]Respecting Apple rate limit..."):
-                return await run_attempts()
+            with self.console.status(
+                "[bold green]Generating aliases at a safe, human pace..."
+            ) as status:
+                return await run_attempts(status)
         return await run_attempts()
+
+    def _resolve_count(self, count: Optional[int]) -> int:
+        if count is not None:
+            return count
+        return IntPrompt.ask(
+            "How many iCloud aliases do you want to generate?",
+            console=self.console,
+        )
+
+    def _resolve_daily_limit(self, daily_limit: Optional[int]) -> int:
+        if daily_limit is not None:
+            return max(1, daily_limit)
+        return IntPrompt.ask(
+            "Maximum aliases per calendar day?",
+            default=MAX_PER_DAY,
+            console=self.console,
+        )
+
+    def _resolve_duration_hours(
+        self, count: int, daily_limit: int, duration_hours: Optional[float]
+    ) -> float:
+        if duration_hours is not None:
+            return max(0.0, duration_hours)
+        return FloatPrompt.ask(
+            "Spread the run over how many hours?",
+            default=suggested_duration_hours(count, daily_limit),
+            console=self.console,
+        )
 
     async def generate(
         self,
         count: Optional[int],
-        mode: Optional[str] = None,
+        daily_limit: Optional[int] = None,
+        duration_hours: Optional[float] = None,
         persist: bool = True,
         show_rules: bool = True,
         show_status: bool = True,
@@ -474,36 +580,36 @@ class RichHideMyEmail(HideMyEmail):
             if not self._ensure_cookie_configured():
                 return []
 
-            prompted_interactively = False
             if show_rules:
                 self.console.rule()
 
-            if count is None:
-                count = int(
-                    IntPrompt.ask(
-                        Text.assemble(("How many iCloud emails you want to generate?")),
-                        console=self.console,
-                    )
-                )
-                prompted_interactively = True
+            count = self._resolve_count(count)
+            if count <= 0:
+                self._log("Nothing to generate (count is 0).")
+                return []
 
-            if mode is None and prompted_interactively:
-                mode = self._prompt_generation_mode()
+            daily_limit = self._resolve_daily_limit(daily_limit)
+            duration_hours = self._resolve_duration_hours(
+                count, daily_limit, duration_hours
+            )
+            duration_seconds = duration_hours * HOUR_SECONDS
 
-            mode = normalize_generation_mode(mode)
-            self._log(f'Generating {count} email(s) with mode "{mode}"...')
+            for warning in analyze_plan(count, duration_seconds, daily_limit):
+                self._log(f"[bold yellow][WARN][/] {warning}")
+
+            schedule = build_generation_schedule(
+                count, duration_seconds, daily_limit
+            )
+            total_span = schedule[-1] if schedule else 0.0
+            self._log(
+                f"Generating {count} alias(es) over ~{self._format_duration(total_span)} "
+                f"(max {MAX_PER_HOUR}/hour, {daily_limit}/day)."
+            )
 
             if show_rules:
                 self.console.rule()
 
-            if mode == FRESH_ACCOUNT_MODE:
-                emails = await self._generate_with_fresh_account_mode(
-                    count, show_status=show_status
-                )
-            else:
-                emails = await self._generate_with_old_account_mode(
-                    count, show_status=show_status
-                )
+            emails = await self._run_schedule(schedule, show_status=show_status)
 
             if persist and emails:
                 save_emails(emails)
@@ -576,7 +682,8 @@ async def generate_account(
     ) as hme:
         emails = await hme.generate(
             account.count,
-            account.mode,
+            account.daily_limit,
+            account.duration_hours,
             persist=False,
             show_rules=False,
             show_status=False,
@@ -602,14 +709,16 @@ async def list_account(
 async def generate_with_accounts_file(
     accounts_file: str,
     count: Optional[int],
-    mode: Optional[str] = None,
+    daily_limit: Optional[int] = None,
+    duration_hours: Optional[float] = None,
 ) -> None:
     console = Console()
     try:
         accounts = load_accounts_config(
             accounts_file,
             default_count=count,
-            default_mode=normalize_generation_mode(mode),
+            default_daily_limit=daily_limit if daily_limit is not None else MAX_PER_DAY,
+            default_duration_hours=duration_hours,
         )
     except ValueError as exc:
         console.log(f"[bold red][ERR][/] - {exc}")
@@ -639,7 +748,7 @@ async def generate_with_accounts_file(
     for account, emails in results:
         all_emails.extend(emails)
         console.log(
-            f'({account.name}) Generated {len(emails)} email(s) with mode "{account.mode}".'
+            f"({account.name}) Generated {len(emails)} email(s)."
         )
 
     if all_emails:
@@ -686,18 +795,21 @@ async def list_with_accounts_file(
 
 async def generate(
     count: Optional[int],
-    mode: Optional[str] = None,
+    daily_limit: Optional[int] = None,
+    duration_hours: Optional[float] = None,
     accounts_file: Optional[str] = None,
 ) -> None:
     if accounts_file:
-        await generate_with_accounts_file(accounts_file, count, mode)
+        await generate_with_accounts_file(
+            accounts_file, count, daily_limit, duration_hours
+        )
         return
 
     async with RichHideMyEmail() as hme:
-        await hme.generate(count, mode)
+        await hme.generate(count, daily_limit, duration_hours)
 
 
-async def list(
+async def list_emails(
     active: bool,
     search: Optional[str],
     export: Optional[str] = None,
@@ -712,8 +824,11 @@ async def list(
 
 
 if __name__ == "__main__":
+    import licensing
+
+    licensing.require_license()
     loop = asyncio.new_event_loop()
     try:
-        loop.run_until_complete(generate(None, None, None))
+        loop.run_until_complete(generate(None, None, None, None))
     except KeyboardInterrupt:
         pass

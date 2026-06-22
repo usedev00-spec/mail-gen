@@ -6,3 +6,10 @@ emails.txt
 cookie.txt
 **/.DS_Store
 *.spec
+
+# Access-key system — NEVER push these (maintainer only)
+license_private_key.pem
+keygen.py
+
+# Generated CSV exports
+*.csv
