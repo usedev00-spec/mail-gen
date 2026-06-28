@@ -10,6 +10,8 @@ cookie.txt
 # Access-key system — NEVER push these (maintainer only)
 license_private_key.pem
 keygen.py
+issued_keys.json
+GUIDE-CLES-PRIVE.md
 
 # Generated CSV exports
 *.csv
