@@ -1,7 +1,7 @@
 [
   {
     "name": "main",
-    "cookie_file": "cookie.txt"
+    "cookie_file": "cookies/cookie.txt"
   },
   {
     "name": "secondary",

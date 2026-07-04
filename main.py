@@ -19,7 +19,7 @@ from rich.table import Table
 from icloud import HideMyEmail
 
 
-DEFAULT_COOKIE_FILE = "cookie.txt"
+DEFAULT_COOKIE_FILE = "cookies/cookie.txt"
 DEFAULT_ACCOUNTS_FILE = "accounts.json"
 DEFAULT_EMAILS_FILE = "emails.txt"
 # Local, git-ignored history of every alias generated, used to count how many
@@ -431,6 +431,17 @@ class RichHideMyEmail(HideMyEmail):
         self.cookie_error = None
         self._load_cookies()
 
+    async def __aenter__(self):
+        await super().__aenter__()
+        if not self.mail_host_resolved:
+            self._log(
+                "[bold yellow][WARN][/] Could not confirm this account's mail "
+                "service host with Apple (setup/validate failed or was "
+                "unreachable); falling back to a default partition. If "
+                "listing looks incomplete, re-export fresh cookies and retry."
+            )
+        return self
+
     def _log_prefix(self) -> str:
         if not self.account_name:
             return ""
@@ -803,8 +814,16 @@ class RichHideMyEmail(HideMyEmail):
             self._log_request_error("list emails", gen_res)
             return []
 
+        all_hme = gen_res["result"]["hmeEmails"]
+        total_active = sum(1 for row in all_hme if row["isActive"])
+        self._log(
+            f"Apple returned {len(all_hme)} alias(es) total for this account "
+            f"({total_active} active, {len(all_hme) - total_active} inactive) "
+            "— fetched in a single call, no pagination."
+        )
+
         rows = []
-        for row in gen_res["result"]["hmeEmails"]:
+        for row in all_hme:
             if row["isActive"] != active:
                 continue
             if search is not None and not re.search(search, row["label"]):

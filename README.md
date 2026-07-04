@@ -81,7 +81,9 @@ La clé est enregistrée dans `~/.hidemyemail/license.key` et réutilisée autom
 
 ## 🍪 Récupérer ton cookie iCloud
 
-Pour communiquer avec Apple, l'outil a besoin de ton cookie de session iCloud. À faire **une seule fois** 🙂
+Pour communiquer avec Apple, l'outil a besoin de ton cookie de session iCloud. Tous tes cookies vivent dans **un seul dossier, [`cookies/`](./cookies)** — simple à retenir, et tu peux les nommer comme tu veux.
+
+À faire **une seule fois** par compte iCloud 🙂
 
 1. Installe l'extension Chrome **[EditThisCookie](https://chrome.google.com/webstore/detail/editthiscookie/fngmhnnpilhplaeedifhccceomclgfbg)**
 
@@ -95,9 +97,13 @@ Pour communiquer avec Apple, l'outil a besoin de ton cookie de session iCloud. �
 
 <p align="center"><img src="docs/export-cookies.png" width=70%></p>
 
-5. Colle le contenu exporté dans un fichier nommé **`cookie.txt`** à la racine du projet.
+5. Colle le contenu exporté dans un fichier **à l'intérieur du dossier `cookies/`** :
+   - Pour ton compte principal (celui utilisé par défaut, sans `--accounts-file`) : **`cookies/cookie.txt`**.
+   - Pour un compte supplémentaire (multi-comptes) : **n'importe quel nom**, ex. `cookies/perso.txt`, `cookies/boulot.txt` — tant que ça finit en `.txt` et que tu réutilises ce nom dans `accounts.json` (voir [Plusieurs comptes iCloud](#-plusieurs-comptes-icloud)).
 
-> 🔒 `cookie.txt` est privé et **ignoré par git** : il ne sera jamais envoyé en ligne.
+Le dépôt fournit des **modèles suivis par git** dans ce même dossier — [`cookies/cookie.example.txt`](./cookies/cookie.example.txt), [`cookies/secondary.example.txt`](./cookies/secondary.example.txt), [`cookies/third.example.txt`](./cookies/third.example.txt) — mis à jour à chaque `git pull`. Le plus simple : copie un modèle, renomme-le sans `.example`, et colle-y ton vrai cookie.
+
+> 🔒 **Tout le contenu réel de `cookies/` est ignoré par git**, quel que soit le nom que tu choisis (seuls les `*.example.txt` sont suivis) : tes cookies ne seront jamais envoyés en ligne, et un `git pull` ne touchera jamais tes vrais fichiers.
 
 ---
 
@@ -223,9 +229,11 @@ Sans `--override-limits`, `--daily-limit 40` et `--max-per-hour 10` seraient sil
 
 ## 📋 Lister / exporter tes alias
 
-Choisis **`2`** dans le menu (ou `python3 cli.py list`). Tu obtiens un tableau :
+Choisis **`2`** dans le menu (ou `python3 cli.py list`). L'outil affiche d'abord le total exact renvoyé par Apple pour ce compte (pratique pour vérifier que rien ne manque), puis un tableau :
 
 ```text
+[00:38:56] Apple returned 662 alias(es) total for this account (662 active,
+           0 inactive) — fetched in a single call, no pagination.
 ┏━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━┓
 ┃ Label    ┃ Hide my email        ┃ Created Date Time   ┃ IsActive ┃
 ┡━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━┩
@@ -233,6 +241,8 @@ Choisis **`2`** dans le menu (ou `python3 cli.py list`). Tu obtiens un tableau :
 │ newsletr │ ef.gh@icloud.com     │ 2026-06-20 09:15:00 │ True     │
 └──────────┴──────────────────────┴─────────────────────┴──────────┘
 ```
+
+Ce total est **toujours complet** (un seul appel API, sans pagination). S'il te semble inférieur à ce que tu vois ailleurs, voir la FAQ *« J'ai plus d'adresses dans Réglages iCloud sur mon iPhone »* ci-dessous.
 
 Tu peux **exporter en CSV** : le menu te le propose, ou en ligne de commande :
 
@@ -283,7 +293,7 @@ Tu peux gérer plusieurs comptes **en parallèle** avec un fichier JSON. Pars de
 [
   {
     "name": "main",
-    "cookie_file": "cookie.txt"
+    "cookie_file": "cookies/cookie.txt"
   },
   {
     "name": "secondary",
@@ -296,17 +306,11 @@ Tu peux gérer plusieurs comptes **en parallèle** avec un fichier JSON. Pars de
 ]
 ```
 
-### 🍪 Le dossier `cookies/`
-
-Pour chaque compte en plus du premier, dépose son cookie dans le dossier **[`cookies/`](./cookies)** :
-
-1. Le dépôt fournit des **modèles suivis par git** : [`cookies/secondary.example.txt`](./cookies/secondary.example.txt), [`cookies/third.example.txt`](./cookies/third.example.txt). Ils sont mis à jour à chaque `git pull`.
-2. Copie un modèle vers son nom réel, ex. `cookies/secondary.txt`, et colle-y le cookie exporté (voir [Récupérer ton cookie iCloud](#-récupérer-ton-cookie-icloud)).
-3. Tes fichiers réels (`cookies/secondary.txt`, `cookies/third.txt`, …) sont **ignorés par git** — tu peux les modifier librement, ils ne seront jamais poussés, et un `git pull` ne les touchera jamais. Seuls les `*.example.txt` du dossier sont suivis.
+Chaque `cookie_file` pointe vers un fichier du dossier **[`cookies/`](./cookies)** (voir [Récupérer ton cookie iCloud](#-récupérer-ton-cookie-icloud) pour comment les créer) — tu peux les nommer comme tu veux, `name` et `cookie_file` n'ont pas besoin de correspondre.
 
 À savoir sur `accounts.json` :
 
-- Chaque compte n'a que **deux champs**, tous les deux obligatoires : `name` (un nom pour l'identifier dans les logs) et `cookie_file` (le chemin de son cookie iCloud).
+- Chaque compte n'a que **deux champs**, tous les deux obligatoires : `name` (un nom pour l'identifier dans les logs) et `cookie_file` (le chemin de son cookie iCloud, en général dans `cookies/`).
 - **Aucune limite ne se configure par compte.** Le nombre d'alias, la limite/jour, le rythme/heure et l'override s'appliquent **globalement**, via `--count`, `--daily-limit`, `--max-per-hour` et `--override-limits` (ou les prompts du menu) — les mêmes réglages pour tous les comptes du fichier.
 - Tous les comptes tournent **en parallèle**, chacun respectant les mêmes limites sûres par défaut (5/heure, 15/jour), et chacun avec son propre compteur de génération du jour (voir plus bas).
 - Les chemins relatifs sont résolus depuis le dossier qui contient `accounts.json`.
@@ -352,14 +356,17 @@ Oui. Active-la une fois avec `python3 cli.py activate TA_CLE`. Voir [Activer ta 
 **« An access key is required » ou « Invalid or expired key »**
 Ta clé est manquante, mal copiée ou expirée. Recolle-la entièrement, ou demande une nouvelle clé à l'auteur.
 
-**« Missing cookie.txt » / erreur de session Apple**
-Ton cookie est absent ou périmé. Réexporte un cookie frais depuis [iCloud](https://www.icloud.com/settings/) et recolle-le dans `cookie.txt`.
+**« Missing cookies/cookie.txt » / erreur de session Apple**
+Ton cookie est absent ou périmé. Réexporte un cookie frais depuis [iCloud](https://www.icloud.com/settings/) et recolle-le dans `cookies/cookie.txt` (ou le fichier du compte concerné dans `cookies/`).
 
 **Pourquoi ça prend des heures ?**
 C'est volontaire : étaler les générations protège ton compte. Réduis le nombre d'alias ou augmente la durée pour un rythme plus tranquille.
 
 **« Today's safe daily limit has already been reached »**
 Tu as relancé l'outil le même jour calendaire après avoir déjà atteint ta limite/jour (ex. 15). C'est volontaire : la limite/jour s'applique **par compte, sur toute la journée**, même en plusieurs lancements, pas juste dans un seul run. L'historique est lu depuis `generation_log.jsonl` (local, ignoré par git). Réessaie demain, ou passe `--override-limits` à tes risques.
+
+**J'ai plus d'adresses dans Réglages > iCloud sur mon iPhone que dans l'export de l'outil**
+C'est normal, et ce n'est pas un bug de fetch : chaque `list`/export affiche désormais le total exact renvoyé par Apple (`Apple returned N alias(es) total...`), et ce total est complet — vérifié, aucune pagination côté serveur. L'écart vient d'ailleurs : l'écran iPhone **Réglages > [ton nom] > iCloud > Masquer mon adresse e-mail** regroupe aussi les adresses créées automatiquement via **« Se connecter avec Apple »** (une par appli où tu l'as utilisé). Ce sont des alias qui viennent d'un système Apple différent (`appleid.apple.com`, pas `icloud.com`) et que cet outil ne gère pas — reconnaissables sur iPhone à leur libellé du style *« Utilisé avec [nom de l'appli] »*.
 
 ---
 

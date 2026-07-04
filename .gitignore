@@ -3,7 +3,6 @@ venv/
 build/
 dist/
 emails.txt
-cookie.txt
 generation_log.jsonl
 **/.DS_Store
 *.spec
