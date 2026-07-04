@@ -15,9 +15,11 @@ from main import (
     HOUR_SECONDS,
     MAX_PER_DAY,
     MAX_PER_HOUR,
+    OVERRIDE_RISK_WARNING,
     analyze_plan,
     generate,
     list_emails,
+    resolve_effective_limits,
     suggested_duration_hours,
 )
 import licensing
@@ -105,13 +107,27 @@ def interactive_generate() -> None:
         f"(max {MAX_PER_HOUR}/hour, {MAX_PER_DAY}/day) spread over the run.[/]\n"
     )
 
+    override_limits = Confirm.ask(
+        "Override the safe limits (5/hour, 15/day)? Not recommended.",
+        default=False,
+        console=console,
+    )
+    max_per_hour = MAX_PER_HOUR
+    if override_limits:
+        console.print(f"[bold red]⚠ {OVERRIDE_RISK_WARNING}[/]\n")
+        max_per_hour = IntPrompt.ask(
+            "Maximum aliases per hour (override)?",
+            default=MAX_PER_HOUR,
+            console=console,
+        )
+
     count = IntPrompt.ask(
         "How many aliases do you want to generate?", default=5, console=console
     )
     daily_limit = IntPrompt.ask(
         "Maximum aliases per calendar day?", default=MAX_PER_DAY, console=console
     )
-    suggested = suggested_duration_hours(count, daily_limit)
+    suggested = suggested_duration_hours(count, daily_limit, max_per_hour)
     duration_hours = FloatPrompt.ask(
         "Spread the run over how many hours?", default=suggested, console=console
     )
@@ -124,17 +140,25 @@ def interactive_generate() -> None:
             "Path to accounts file", default="accounts.json", console=console
         )
 
+    daily_limit, max_per_hour, clamp_warnings = resolve_effective_limits(
+        daily_limit, max_per_hour, override_limits
+    )
+
     duration_seconds = duration_hours * HOUR_SECONDS
     pace = count / duration_hours if duration_hours > 0 else float("inf")
-    warnings = analyze_plan(count, duration_seconds, daily_limit)
+    warnings = clamp_warnings + analyze_plan(
+        count, duration_seconds, daily_limit, max_per_hour
+    )
 
     summary_panel(
         "Review",
         [
             ("Aliases", str(count)),
+            ("Max per hour", f"{max_per_hour}/hour"),
             ("Daily limit", f"{daily_limit}/day"),
             ("Duration", f"{duration_hours:g} h"),
             ("Pace", "instant" if pace == float("inf") else f"~{pace:.1f}/hour"),
+            ("Override", "ON — at your own risk" if override_limits else "off (safe defaults)"),
             ("Accounts file", accounts_file or "—"),
         ],
     )
@@ -146,7 +170,16 @@ def interactive_generate() -> None:
         console.print("[yellow]Cancelled.[/]")
         return
 
-    run_async(generate(count, daily_limit, duration_hours, accounts_file))
+    run_async(
+        generate(
+            count,
+            daily_limit,
+            duration_hours,
+            accounts_file,
+            max_per_hour=max_per_hour,
+            override_limits=override_limits,
+        )
+    )
 
 
 def interactive_list() -> None:
@@ -246,7 +279,31 @@ def cli(ctx):
     default=MAX_PER_DAY,
     type=int,
     show_default=True,
-    help=f"Maximum aliases per calendar day (recommended <= {MAX_PER_DAY}).",
+    help=(
+        f"Maximum aliases per calendar day. Values above {MAX_PER_DAY} are "
+        "clamped unless --override-limits is also passed."
+    ),
+)
+@click.option(
+    "--max-per-hour",
+    default=None,
+    type=int,
+    help=(
+        f"Maximum aliases per rolling hour (default {MAX_PER_HOUR}). Values "
+        f"above {MAX_PER_HOUR} are clamped unless --override-limits is also "
+        "passed."
+    ),
+)
+@click.option(
+    "--override-limits",
+    is_flag=True,
+    default=False,
+    help=(
+        "Voluntarily exceed the safe default limits "
+        f"({MAX_PER_HOUR}/hour, {MAX_PER_DAY}/day), at your own risk. Must be "
+        "passed explicitly — a large --daily-limit or --max-per-hour alone is "
+        "not enough."
+    ),
 )
 @click.option(
     "--duration",
@@ -262,15 +319,28 @@ def cli(ctx):
     "--accounts-file",
     default=None,
     help=(
-        "Path to a JSON file that defines multiple iCloud accounts. Each "
-        "account can override its own cookie_file, count, daily_limit, and "
-        "duration_hours."
+        "Path to a JSON file that lists multiple iCloud accounts, each with "
+        'a "name" and a "cookie_file". All accounts share the same '
+        "--count/--daily-limit/--max-per-hour/--override-limits."
     ),
 )
-def generatecommand(count, daily_limit, duration_hours, accounts_file):
+def generatecommand(
+    count, daily_limit, max_per_hour, override_limits, duration_hours, accounts_file
+):
     "Generate aliases at a safe, human pace"
     licensing.require_license(console)
-    run_async(generate(count, daily_limit, duration_hours, accounts_file))
+    if override_limits:
+        console.print(f"[bold red]⚠ {OVERRIDE_RISK_WARNING}[/]")
+    run_async(
+        generate(
+            count,
+            daily_limit,
+            duration_hours,
+            accounts_file,
+            max_per_hour=max_per_hour,
+            override_limits=override_limits,
+        )
+    )
 
 
 @click.command(name="list")

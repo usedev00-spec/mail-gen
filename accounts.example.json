@@ -1,14 +1,14 @@
 [
   {
     "name": "main",
-    "cookie_file": "cookies/main.txt",
-    "count": 15,
-    "daily_limit": 25,
-    "duration_hours": 4
+    "cookie_file": "cookie.txt"
   },
   {
     "name": "secondary",
-    "cookie_file": "cookies/secondary.txt",
-    "count": 5
+    "cookie_file": "cookies/secondary.txt"
+  },
+  {
+    "name": "third",
+    "cookie_file": "cookies/third.txt"
   }
 ]

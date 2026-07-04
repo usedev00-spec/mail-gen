@@ -4,8 +4,19 @@ build/
 dist/
 emails.txt
 cookie.txt
+generation_log.jsonl
 **/.DS_Store
 *.spec
+
+# Multi-account config — real, user-specific, never pushed.
+# Only accounts.example.json is tracked.
+accounts.json
+
+# Real per-account cookie files live in cookies/ and are never pushed.
+# Only the *.example.txt templates in that folder are tracked (git pull
+# brings you the templates; your real files sit alongside, untouched).
+cookies/*
+!cookies/*.example.txt
 
 # Access-key system — NEVER push these (maintainer only)
 license_private_key.pem

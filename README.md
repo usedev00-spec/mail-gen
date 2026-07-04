@@ -27,9 +27,10 @@
 
 ## 🚀 En bref
 
-- 🛡️ **Rythme sûr et « humain »** : jamais plus de **5 alias/heure** ni plus que ta **limite par jour** (≤ 25 conseillé). Les générations sont étalées dans le temps, de façon aléatoire, pour imiter un humain et éviter que ton compte iCloud soit signalé.
+- 🛡️ **Rythme sûr et « humain » par défaut** : jamais plus de **5 alias/heure** ni plus de **15 alias/jour**, sauf si tu actives volontairement le mode override (voir plus bas). Les générations sont étalées dans le temps, de façon aléatoire, pour imiter un humain et éviter que ton compte iCloud soit signalé.
 - 🧭 **Menu interactif** : lance l'app sans rien connaître, elle te guide pas à pas.
-- ⏳ **Compte à rebours en direct** entre chaque alias.
+- ⏳ **Compte à rebours en direct**, alias par alias, avec le nombre d'alias **restants** affiché à chaque instant (y compris en multi-comptes, avec un tableau de bord par compte).
+- 📊 **Compteur du jour** : à chaque lancement, l'outil te dit combien d'alias ont déjà été générés aujourd'hui (par compte) et réduit automatiquement ce qu'il te reste à générer pour rester sous la limite/jour.
 - 👥 **Multi-comptes** : gère 1 ou plusieurs comptes iCloud en parallèle.
 - 🔑 **Clé d'accès** pour utiliser l'outil (vérification 100 % hors-ligne).
 
@@ -145,38 +146,48 @@ Choisis **`1`** dans le menu. L'outil te pose 3 questions simples, puis affiche 
 
 ```text
 ──────────────────────── Generate aliases ────────────────────────
-Aliases are generated at a safe, human pace (max 5/hour, 25/day)
+Aliases are generated at a safe, human pace (max 5/hour, 15/day)
 spread over the run.
 
+Override the safe limits (5/hour, 15/day)? Not recommended. [y/n] (n): n
+
 How many aliases do you want to generate? (5): 10
-Maximum aliases per calendar day? (25): 25
+Maximum aliases per calendar day? (15): 15
 Spread the run over how many hours? (3.0): 8
 Use a multi-account JSON file? [y/n] (n): n
 
 ╭──────────────────── Review ────────────────────╮
 │         Aliases    10                           │
-│     Daily limit    25/day                       │
+│    Max per hour    5/hour                       │
+│     Daily limit    15/day                       │
 │        Duration    8 h                          │
 │            Pace    ~1.3/hour                     │
+│        Override    off (safe defaults)          │
 │   Accounts file    —                            │
 ╰─────────────────────────────────────────────────╯
 Proceed? [y/n] (y): y
 ```
 
-Que veulent dire les 3 questions ?
+Que veulent dire les questions ?
 
 | Question | Signification |
 |---|---|
+| **Override the safe limits…** | Active volontairement le mode risqué (voir ci-dessous). Par défaut : non. |
 | **How many aliases…** | Combien d'alias tu veux créer au total |
-| **Maximum… per calendar day** | Plafond d'alias par jour calendaire (25 conseillé) |
+| **Maximum… per calendar day** | Plafond d'alias par jour calendaire (15 par défaut, en sécurité) |
 | **Spread the run over how many hours** | Sur combien d'heures étaler la génération |
 
-Ensuite, un **compte à rebours en direct** s'affiche entre chaque alias :
+Avant de démarrer, l'outil te dit combien d'alias tu as **déjà générés aujourd'hui** (lu depuis l'historique local `generation_log.jsonl`) et réduit le nombre à générer si besoin pour rester sous la limite/jour :
 
 ```text
-[00:38:56] Generating 10 alias(es) over ~8h 42m 8s (max 5/hour, 25/day).
+[00:38:56] 3 alias(es) already generated today (calendar day, limit 15/day).
+[00:38:56] Generating 10 alias(es) over ~8h 42m 8s (max 5/hour, 15/day).
+```
 
-⠹ Next alias [1/10] at 01:25:43 — 46m 47s remaining
+Ensuite, un **compte à rebours en direct** s'affiche entre chaque alias, avec le nombre d'alias **restants** :
+
+```text
+⠹ Alias 1/10 (10 remaining) — next at 01:25:43 in 46m 47s
 ```
 
 > ⏳ **Laisse la fenêtre ouverte** pendant toute la durée du run : étaler les alias dans le temps est exactement ce qui protège ton compte.
@@ -187,10 +198,26 @@ Si tu demandes un rythme trop rapide (ex. 15 alias en 1 h), l'outil **te prévie
 
 ```text
 ⚠ The requested 1h 0m 0s window is too short to stay within 5/hour
-  and 25/day. The run will be automatically extended to about
+  and 15/day. The run will be automatically extended to about
   2h 7m 0s to protect the account.
 Proceed? [y/n] (n):
 ```
+
+### ⚠️ Mode override (à tes risques)
+
+Par défaut, **impossible de dépasser 5/heure et 15/jour**, même si tu tapes un chiffre plus grand dans un prompt : la valeur est automatiquement ramenée (« clamped ») à la limite sûre, avec un message clair.
+
+Pour dépasser ces limites en connaissance de cause :
+
+- **Menu interactif** : réponds `y` à *« Override the safe limits… »*. Un avertissement rouge s'affiche, puis tu peux choisir un rythme horaire et un plafond journalier plus élevés.
+- **Ligne de commande** : ajoute `--override-limits`, avec éventuellement `--daily-limit` et `--max-per-hour` :
+  ```bash
+  python3 cli.py generate --count 50 --daily-limit 40 --max-per-hour 10 --override-limits
+  ```
+
+Sans `--override-limits`, `--daily-limit 40` et `--max-per-hour 10` seraient silencieusement ramenés à 15 et 5. Le flag doit être **explicite** — ce n'est jamais activé par accident.
+
+> ⚠️ Dépasser le rythme sûr augmente le risque de rate-limit, de blocage temporaire ou d'autre restriction sur le compte iCloud/Apple. À utiliser à tes propres risques.
 
 ---
 
@@ -223,8 +250,11 @@ Si tu préfères tout passer en une commande, sans le menu :
 # 15 alias étalés sur 4 heures (≈ 4/heure)
 python3 cli.py generate --count 15 --duration 4
 
-# laisse l'outil choisir une durée sûre, plafond à 25/jour
-python3 cli.py generate --count 25 --daily-limit 25
+# laisse l'outil choisir une durée sûre, plafond à 15/jour (défaut)
+python3 cli.py generate --count 15
+
+# dépasse volontairement les limites sûres (à tes risques)
+python3 cli.py generate --count 50 --daily-limit 40 --max-per-hour 10 --override-limits
 
 # lister les alias actifs
 python3 cli.py list
@@ -237,7 +267,9 @@ python3 cli.py generate --help
 | Option | Rôle |
 |---|---|
 | `--count` | Nombre d'alias à générer |
-| `--daily-limit` | Maximum d'alias par jour (défaut : 25) |
+| `--daily-limit` | Maximum d'alias par jour (défaut et plafond sûr : 15, sauf `--override-limits`) |
+| `--max-per-hour` | Maximum d'alias par heure glissante (défaut et plafond sûr : 5, sauf `--override-limits`) |
+| `--override-limits` | Active volontairement le dépassement des limites sûres, à tes risques |
 | `--duration` | Nombre d'heures pour étaler le run (sinon, rythme sûr automatique) |
 | `--accounts-file` | Fichier JSON multi-comptes (voir ci-dessous) |
 
@@ -250,33 +282,50 @@ Tu peux gérer plusieurs comptes **en parallèle** avec un fichier JSON. Pars de
 ```json
 [
   {
-    "name": "principal",
-    "cookie_file": "cookies/principal.txt",
-    "count": 15,
-    "daily_limit": 25,
-    "duration_hours": 4
+    "name": "main",
+    "cookie_file": "cookie.txt"
   },
   {
-    "name": "secondaire",
-    "cookie_file": "cookies/secondaire.txt",
-    "count": 5
+    "name": "secondary",
+    "cookie_file": "cookies/secondary.txt"
+  },
+  {
+    "name": "third",
+    "cookie_file": "cookies/third.txt"
   }
 ]
 ```
 
-À savoir :
+### 🍪 Le dossier `cookies/`
 
-- `cookie_file` est **obligatoire** (chemin du cookie de ce compte).
-- `count`, `daily_limit`, `duration_hours` sont **optionnels** : s'ils manquent, les valeurs du CLI (`--count`, `--daily-limit`, `--duration`) sont utilisées.
-- Chaque compte est **limité indépendamment** (≤ 5/heure et ≤ sa limite/jour), et tous tournent **en parallèle**.
+Pour chaque compte en plus du premier, dépose son cookie dans le dossier **[`cookies/`](./cookies)** :
+
+1. Le dépôt fournit des **modèles suivis par git** : [`cookies/secondary.example.txt`](./cookies/secondary.example.txt), [`cookies/third.example.txt`](./cookies/third.example.txt). Ils sont mis à jour à chaque `git pull`.
+2. Copie un modèle vers son nom réel, ex. `cookies/secondary.txt`, et colle-y le cookie exporté (voir [Récupérer ton cookie iCloud](#-récupérer-ton-cookie-icloud)).
+3. Tes fichiers réels (`cookies/secondary.txt`, `cookies/third.txt`, …) sont **ignorés par git** — tu peux les modifier librement, ils ne seront jamais poussés, et un `git pull` ne les touchera jamais. Seuls les `*.example.txt` du dossier sont suivis.
+
+À savoir sur `accounts.json` :
+
+- Chaque compte n'a que **deux champs**, tous les deux obligatoires : `name` (un nom pour l'identifier dans les logs) et `cookie_file` (le chemin de son cookie iCloud).
+- **Aucune limite ne se configure par compte.** Le nombre d'alias, la limite/jour, le rythme/heure et l'override s'appliquent **globalement**, via `--count`, `--daily-limit`, `--max-per-hour` et `--override-limits` (ou les prompts du menu) — les mêmes réglages pour tous les comptes du fichier.
+- Tous les comptes tournent **en parallèle**, chacun respectant les mêmes limites sûres par défaut (5/heure, 15/jour), et chacun avec son propre compteur de génération du jour (voir plus bas).
 - Les chemins relatifs sont résolus depuis le dossier qui contient `accounts.json`.
+- `accounts.json` est **ignoré par git** : jamais poussé en ligne (seul `accounts.example.json` est suivi).
+- Si `accounts.json` est mal formé, s'il manque `name` ou `cookie_file` sur un compte, ou si un `cookie_file` référencé n'existe pas, l'outil affiche une erreur claire et s'arrête proprement (pas de stacktrace).
 
 ```bash
-# Générer pour tous les comptes du fichier
-python3 cli.py generate --accounts-file accounts.json
+# Générer pour tous les comptes du fichier (--count obligatoire pour le multi-compte)
+python3 cli.py generate --accounts-file accounts.json --count 15
 
 # Lister sur tous les comptes, avec export
 python3 cli.py list --accounts-file accounts.json --export tous_les_comptes.csv
+```
+
+Pendant la génération multi-comptes, un **tableau de bord en direct** affiche une ligne par compte avec son propre compte à rebours :
+
+```text
+(main)       Alias 2/10 (8 remaining) — next at 01:12:04 in 12m 3s
+(secondary)  Alias 1/5 (5 remaining) — next at 01:05:30 in 5m 29s
 ```
 
 ---
@@ -308,6 +357,9 @@ Ton cookie est absent ou périmé. Réexporte un cookie frais depuis [iCloud](ht
 
 **Pourquoi ça prend des heures ?**
 C'est volontaire : étaler les générations protège ton compte. Réduis le nombre d'alias ou augmente la durée pour un rythme plus tranquille.
+
+**« Today's safe daily limit has already been reached »**
+Tu as relancé l'outil le même jour calendaire après avoir déjà atteint ta limite/jour (ex. 15). C'est volontaire : la limite/jour s'applique **par compte, sur toute la journée**, même en plusieurs lancements, pas juste dans un seul run. L'historique est lu depuis `generation_log.jsonl` (local, ignoré par git). Réessaie demain, ou passe `--override-limits` à tes risques.
 
 ---
 
