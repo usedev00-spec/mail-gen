@@ -574,6 +574,8 @@ class RichHideMyEmail(HideMyEmail):
         index: int,
         total: int,
         target_monotonic: float,
+        generated_today: int,
+        daily_limit: int,
     ) -> None:
         """Tick a live, second-by-second countdown until ``target_monotonic``."""
         target_clock = (
@@ -587,7 +589,8 @@ class RichHideMyEmail(HideMyEmail):
                 break
             update_fn(
                 f"[bold green]Alias {index + 1}/{total}[/] "
-                f"([bold]{remaining_count}[/] remaining) — next at {target_clock} "
+                f"([bold]{remaining_count}[/] remaining) — "
+                f"[bold]{generated_today}/{daily_limit}[/] today — next at {target_clock} "
                 f"in [bold]{self._format_duration(remaining)}[/]"
             )
             await asyncio.sleep(min(1.0, remaining))
@@ -595,6 +598,8 @@ class RichHideMyEmail(HideMyEmail):
     async def _run_schedule(
         self,
         schedule: list[float],
+        daily_limit: int,
+        generated_today_start: int = 0,
         show_status: bool = True,
         status_sink: Optional[Callable[[str], None]] = None,
     ) -> list[str]:
@@ -606,10 +611,18 @@ class RichHideMyEmail(HideMyEmail):
             for index, offset in enumerate(schedule):
                 target_monotonic = started_at + offset
                 wait_seconds = target_monotonic - time.monotonic()
+                generated_today = generated_today_start + len(emails)
 
                 if wait_seconds > 0:
                     if update_fn is not None:
-                        await self._countdown(update_fn, index, total, target_monotonic)
+                        await self._countdown(
+                            update_fn,
+                            index,
+                            total,
+                            target_monotonic,
+                            generated_today,
+                            daily_limit,
+                        )
                     else:
                         remaining_count = total - index
                         target_clock = (
@@ -617,15 +630,19 @@ class RichHideMyEmail(HideMyEmail):
                             + datetime.timedelta(seconds=wait_seconds)
                         ).strftime("%H:%M:%S")
                         self._log(
-                            f"[{index + 1}/{total}] ({remaining_count} remaining) "
-                            f"Next alias at {target_clock} "
-                            f"(in {self._format_duration(wait_seconds)})."
+                            f"[{index + 1}/{total}] ({remaining_count} remaining, "
+                            f"{generated_today}/{daily_limit} today) Next alias at "
+                            f"{target_clock} (in {self._format_duration(wait_seconds)})."
                         )
                         await asyncio.sleep(wait_seconds)
 
                 email = await self._generate_one()
                 if email is not None:
                     emails.append(email)
+                    self._log(
+                        f"[dim]{generated_today_start + len(emails)}/{daily_limit} "
+                        "alias(es) generated today.[/]"
+                    )
 
             return emails
 
@@ -747,7 +764,11 @@ class RichHideMyEmail(HideMyEmail):
                 self.console.rule()
 
             emails = await self._run_schedule(
-                schedule, show_status=show_status, status_sink=status_sink
+                schedule,
+                daily_limit,
+                generated_today_start=generated_today,
+                show_status=show_status,
+                status_sink=status_sink,
             )
 
             if persist and emails:
