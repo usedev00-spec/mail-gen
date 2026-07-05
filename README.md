@@ -148,7 +148,7 @@ Tape le numéro et appuie sur **Entrée**.
 
 ## ✨ Générer des alias
 
-Choisis **`1`** dans le menu. L'outil te pose 3 questions simples, puis affiche un récapitulatif avant de lancer :
+Choisis **`1`** dans le menu. L'outil te pose quelques questions simples, puis affiche un récapitulatif avant de lancer :
 
 ```text
 ──────────────────────── Generate aliases ────────────────────────
@@ -157,20 +157,24 @@ spread over the run.
 
 Override the safe limits (5/hour, 15/day)? Not recommended. [y/n] (n): n
 
-How many aliases do you want to generate? (5): 10
+How many aliases do you want to generate? (5): 200
+At the safe default pace (5/hour, 15/day), generating 200 alias(es) will
+take about 14 day(s) (~13d 0h). The script keeps running until they're
+all generated — it does not stop early.
+
 Maximum aliases per calendar day? (15): 15
-Spread the run over how many hours? (3.0): 8
+Spread the run over how many hours? (313.0): 313
 Use a multi-account JSON file? [y/n] (n): n
 
-╭──────────────────── Review ────────────────────╮
-│         Aliases    10                           │
-│    Max per hour    5/hour                       │
-│     Daily limit    15/day                       │
-│        Duration    8 h                          │
-│            Pace    ~1.3/hour                     │
-│        Override    off (safe defaults)          │
-│   Accounts file    —                            │
-╰─────────────────────────────────────────────────╯
+╭──────────────────── Review ─────────────────────╮
+│         Aliases    200                           │
+│    Max per hour    5/hour                        │
+│     Daily limit    15/day                        │
+│        Duration    313 h (~14 day(s))            │
+│            Pace    ~0.6/hour                     │
+│        Override    off (safe defaults)           │
+│   Accounts file    —                             │
+╰───────────────────────────────────────────────────╯
 Proceed? [y/n] (y): y
 ```
 
@@ -179,24 +183,26 @@ Que veulent dire les questions ?
 | Question | Signification |
 |---|---|
 | **Override the safe limits…** | Active volontairement le mode risqué (voir ci-dessous). Par défaut : non. |
-| **How many aliases…** | Combien d'alias tu veux créer au total |
+| **How many aliases…** | Combien d'alias tu veux créer **au total** — pas de plafond ; l'outil calcule et affiche tout de suite combien de temps ça prendra pour rester safe |
 | **Maximum… per calendar day** | Plafond d'alias par jour calendaire (15 par défaut, en sécurité) |
-| **Spread the run over how many hours** | Sur combien d'heures étaler la génération |
+| **Spread the run over how many hours** | Sur combien d'heures étaler la génération (pré-rempli avec la durée sûre calculée juste au-dessus) |
 
-Avant de démarrer, l'outil te dit combien d'alias tu as **déjà générés aujourd'hui** (lu depuis l'historique local `generation_log.jsonl`) et réduit le nombre à générer si besoin pour rester sous la limite/jour :
+> ✅ **Le script ne s'arrête jamais avant d'avoir généré le nombre demandé.** Si tu demandes 200 alias, il tourne le temps qu'il faut (plusieurs jours si besoin) en respectant 5/heure et 15/jour — il ne s'arrête pas à 15 puis abandonne. Il faut juste **laisser le terminal ouvert** pendant toute la durée (voir plus bas pour lancer ça en arrière-plan).
+
+Avant de démarrer, l'outil te dit aussi combien d'alias tu as **déjà générés aujourd'hui** (lu depuis l'historique local `generation_log.jsonl`, cumulé même sur plusieurs lancements dans la même journée) :
 
 ```text
 [00:38:56] 3 alias(es) already generated today (calendar day, limit 15/day).
-[00:38:56] Generating 10 alias(es) over ~8h 42m 8s (max 5/hour, 15/day).
+[00:38:56] Generating 200 alias(es) over ~13d 0h (~14 day(s)) (max 5/hour, 15/day).
 ```
 
-Ensuite, un **compte à rebours en direct** s'affiche entre chaque alias, avec le nombre d'alias **restants** :
+Ensuite, un **compte à rebours en direct** s'affiche entre chaque alias, avec le nombre d'alias **restants** et ton compteur du jour qui progresse en direct :
 
 ```text
-⠹ Alias 1/10 (10 remaining) — next at 01:25:43 in 46m 47s
+⠹ Alias 1/200 (200 remaining) — 0/15 today — next at 01:25:43 in 46m 47s
 ```
 
-> ⏳ **Laisse la fenêtre ouverte** pendant toute la durée du run : étaler les alias dans le temps est exactement ce qui protège ton compte.
+> ⏳ **Laisse la fenêtre ouverte** pendant toute la durée du run : étaler les alias dans le temps est exactement ce qui protège ton compte. Pour un run de plusieurs jours, pense à lancer ça sur une machine qui reste allumée (ou dans un `tmux`/`screen`/service en arrière-plan).
 
 ### 🛡️ Le garde-fou anti-blocage
 
@@ -362,8 +368,11 @@ Ton cookie est absent ou périmé. Réexporte un cookie frais depuis [iCloud](ht
 **Pourquoi ça prend des heures ?**
 C'est volontaire : étaler les générations protège ton compte. Réduis le nombre d'alias ou augmente la durée pour un rythme plus tranquille.
 
-**« Today's safe daily limit has already been reached »**
-Tu as relancé l'outil le même jour calendaire après avoir déjà atteint ta limite/jour (ex. 15). C'est volontaire : la limite/jour s'applique **par compte, sur toute la journée**, même en plusieurs lancements, pas juste dans un seul run. L'historique est lu depuis `generation_log.jsonl` (local, ignoré par git). Réessaie demain, ou passe `--override-limits` à tes risques.
+**J'ai demandé 200 alias, pourquoi ça n'en génère que 15 ?**
+Ça ne devrait plus arriver — si tu vois ça, ta version est à jour et c'est un bug, remonte-le. Le comportement normal : demander 200 alias calcule automatiquement la durée sûre nécessaire (~14 jours à 15/jour) et **le script tourne tout ce temps sans s'arrêter**, jusqu'à avoir généré les 200. Rien n'est jamais tronqué au plafond journalier — le plafond ne fait qu'étaler la génération sur plus de jours.
+
+**Le compteur « alias déjà générés aujourd'hui », c'est pour quoi ?**
+Il est **informatif** (et alimente le compte à rebours en direct) : il te dit combien ce compte a déjà généré aujourd'hui, y compris via un lancement précédent dans la même journée. Il n'annule ni ne réduit jamais le nombre total que tu as demandé.
 
 **J'ai plus d'adresses dans Réglages > iCloud sur mon iPhone que dans l'export de l'outil**
 C'est normal, et ce n'est pas un bug de fetch : chaque `list`/export affiche désormais le total exact renvoyé par Apple (`Apple returned N alias(es) total...`), et ce total est complet — vérifié, aucune pagination côté serveur. L'écart vient d'ailleurs : l'écran iPhone **Réglages > [ton nom] > iCloud > Masquer mon adresse e-mail** regroupe aussi les adresses créées automatiquement via **« Se connecter avec Apple »** (une par appli où tu l'as utilisé). Ce sont des alias qui viennent d'un système Apple différent (`appleid.apple.com`, pas `icloud.com`) et que cet outil ne gère pas — reconnaissables sur iPhone à leur libellé du style *« Utilisé avec [nom de l'appli] »*.

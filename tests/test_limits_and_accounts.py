@@ -9,13 +9,16 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from main import (
+    DAY_SECONDS,
     MAX_PER_DAY,
     MAX_PER_HOUR,
     AccountConfig,
+    build_generation_schedule,
     count_generated_today,
     load_accounts_config,
     record_generation,
     resolve_effective_limits,
+    suggested_duration_hours,
 )
 
 
@@ -187,6 +190,33 @@ class DailyGenerationCounterTest(unittest.TestCase):
         self.assertEqual(
             count_generated_today("main", log_file=self.log_file), 0
         )
+
+
+class LargeCountScheduleTest(unittest.TestCase):
+    """Regression test: a big count (e.g. 200) must never be truncated down
+    to the daily limit — it should just take more days at the safe pace."""
+
+    def test_large_count_is_not_truncated(self):
+        count = 200
+        hours = suggested_duration_hours(count, MAX_PER_DAY, MAX_PER_HOUR)
+        schedule = build_generation_schedule(count, hours * 3600, MAX_PER_DAY, MAX_PER_HOUR)
+        self.assertEqual(len(schedule), count)
+
+    def test_large_count_spans_multiple_days(self):
+        count = 200
+        hours = suggested_duration_hours(count, MAX_PER_DAY, MAX_PER_HOUR)
+        schedule = build_generation_schedule(count, hours * 3600, MAX_PER_DAY, MAX_PER_HOUR)
+        self.assertGreater(schedule[-1], DAY_SECONDS)
+
+    def test_already_generated_today_delays_schedule_start(self):
+        schedule_fresh = build_generation_schedule(5, 0.0, MAX_PER_DAY, MAX_PER_HOUR)
+        schedule_full_day = build_generation_schedule(
+            5, 0.0, MAX_PER_DAY, MAX_PER_HOUR, already_generated_today=MAX_PER_DAY
+        )
+        # With today's quota already used up, the very first new alias must
+        # wait roughly a full day, unlike a fresh schedule starting at ~0.
+        self.assertGreater(schedule_full_day[0], schedule_fresh[0])
+        self.assertGreaterEqual(schedule_full_day[0], DAY_SECONDS)
 
 
 if __name__ == "__main__":

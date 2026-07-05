@@ -117,7 +117,10 @@ def resolve_effective_limits(
 
 
 def minimum_safe_duration_seconds(
-    count: int, daily_limit: int, max_per_hour: int = MAX_PER_HOUR
+    count: int,
+    daily_limit: int,
+    max_per_hour: int = MAX_PER_HOUR,
+    already_generated_today: int = 0,
 ) -> float:
     """Shortest run that still respects `max_per_hour` and the daily limit.
 
@@ -127,19 +130,27 @@ def minimum_safe_duration_seconds(
     """
     if count <= 1:
         return 0.0
-    schedule = build_generation_schedule(count, 0.0, daily_limit, max_per_hour)
+    schedule = build_generation_schedule(
+        count, 0.0, daily_limit, max_per_hour, already_generated_today
+    )
     return schedule[-1] if schedule else 0.0
 
 
 def suggested_duration_hours(
-    count: int, daily_limit: int, max_per_hour: int = MAX_PER_HOUR
+    count: int,
+    daily_limit: int,
+    max_per_hour: int = MAX_PER_HOUR,
+    already_generated_today: int = 0,
 ) -> float:
     """A comfortable, human run length for `count` aliases (in hours)."""
     if count <= 1:
         return 1.0
     comfortable = count / COMFORTABLE_PER_HOUR
     min_safe = (
-        minimum_safe_duration_seconds(count, daily_limit, max_per_hour) / HOUR_SECONDS
+        minimum_safe_duration_seconds(
+            count, daily_limit, max_per_hour, already_generated_today
+        )
+        / HOUR_SECONDS
     )
     return float(max(1, math.ceil(max(comfortable, min_safe))))
 
@@ -149,29 +160,43 @@ def build_generation_schedule(
     duration_seconds: float,
     daily_limit: int,
     max_per_hour: int = MAX_PER_HOUR,
+    already_generated_today: int = 0,
 ) -> list[float]:
     """Offsets (seconds from start) for `count` generations.
 
     Guarantees at most `max_per_hour` per rolling hour and `daily_limit` per
     rolling day, while spreading the work across `duration_seconds` with random,
     human-looking timing. If the window is too short to stay safe, the schedule
-    is automatically extended past it.
+    is automatically extended past it — a large `count` (e.g. 200) is never
+    truncated, it just takes as many days as needed at the safe pace.
+
+    `already_generated_today` accounts for aliases already generated earlier
+    today by a separate run of this account: they're modeled as having
+    happened right at the start (offset 0), so the rolling hour/day windows
+    correctly make room for them before any of *this* schedule's aliases.
     """
+    history = [0.0] * max(0, already_generated_today)
     offsets: list[float] = []
     slot = duration_seconds / count if count > 0 else 0.0
     for i in range(count):
         # Human target: a random point inside this alias' time slot.
         target = i * slot + random.uniform(0.2, 0.9) * slot
         earliest = 0.0
-        if i >= max_per_hour:
+        position = len(history) + i
+        combined = history + offsets
+        if position >= max_per_hour:
             earliest = max(
                 earliest,
-                offsets[i - max_per_hour] + HOUR_SECONDS + SCHEDULE_GAP_BUFFER_SECONDS,
+                combined[position - max_per_hour]
+                + HOUR_SECONDS
+                + SCHEDULE_GAP_BUFFER_SECONDS,
             )
-        if i >= daily_limit:
+        if position >= daily_limit:
             earliest = max(
                 earliest,
-                offsets[i - daily_limit] + DAY_SECONDS + SCHEDULE_GAP_BUFFER_SECONDS,
+                combined[position - daily_limit]
+                + DAY_SECONDS
+                + SCHEDULE_GAP_BUFFER_SECONDS,
             )
         if offsets:
             earliest = max(earliest, offsets[-1] + MIN_GAP_SECONDS)
@@ -184,12 +209,15 @@ def analyze_plan(
     duration_seconds: float,
     daily_limit: int,
     max_per_hour: int = MAX_PER_HOUR,
+    already_generated_today: int = 0,
 ) -> list[str]:
     """Human-readable warnings for an unsafe generation plan (empty if safe)."""
     warnings: list[str] = []
 
     if count > 1:
-        min_safe = minimum_safe_duration_seconds(count, daily_limit, max_per_hour)
+        min_safe = minimum_safe_duration_seconds(
+            count, daily_limit, max_per_hour, already_generated_today
+        )
         if duration_seconds < min_safe:
             window = "instant" if duration_seconds <= 0 else format_duration(duration_seconds)
             warnings.append(
@@ -689,12 +717,15 @@ class RichHideMyEmail(HideMyEmail):
         daily_limit: int,
         duration_hours: Optional[float],
         max_per_hour: int = MAX_PER_HOUR,
+        already_generated_today: int = 0,
     ) -> float:
         if duration_hours is not None:
             return max(0.0, duration_hours)
         return FloatPrompt.ask(
             "Spread the run over how many hours?",
-            default=suggested_duration_hours(count, daily_limit, max_per_hour),
+            default=suggested_duration_hours(
+                count, daily_limit, max_per_hour, already_generated_today
+            ),
             console=self.console,
         )
 
@@ -731,44 +762,30 @@ class RichHideMyEmail(HideMyEmail):
             if override_limits:
                 self._log(f"[bold red][WARN][/] {OVERRIDE_RISK_WARNING}")
 
-            generated_today = count_generated_today(self.account_name)
+            generated_today = 0 if override_limits else count_generated_today(self.account_name)
             self._log(
                 f"{generated_today} alias(es) already generated today "
                 f"(calendar day, limit {daily_limit}/day)."
             )
-            if not override_limits:
-                remaining_today = max(0, daily_limit - generated_today)
-                if remaining_today <= 0:
-                    self._log(
-                        "[bold yellow][WARN][/] Today's safe daily limit has "
-                        "already been reached. No more aliases will be "
-                        "generated until tomorrow. Pass --override-limits to "
-                        "proceed anyway, at your own risk."
-                    )
-                    return []
-                if count > remaining_today:
-                    self._log(
-                        f"[bold yellow][WARN][/] Requested {count}, but only "
-                        f"{remaining_today} remain within today's daily limit. "
-                        f"Reducing to {remaining_today}."
-                    )
-                    count = remaining_today
 
             duration_hours = self._resolve_duration_hours(
-                count, daily_limit, duration_hours, max_per_hour
+                count, daily_limit, duration_hours, max_per_hour, generated_today
             )
             duration_seconds = duration_hours * HOUR_SECONDS
 
-            for warning in analyze_plan(count, duration_seconds, daily_limit, max_per_hour):
+            for warning in analyze_plan(
+                count, duration_seconds, daily_limit, max_per_hour, generated_today
+            ):
                 self._log(f"[bold yellow][WARN][/] {warning}")
 
             schedule = build_generation_schedule(
-                count, duration_seconds, daily_limit, max_per_hour
+                count, duration_seconds, daily_limit, max_per_hour, generated_today
             )
             total_span = schedule[-1] if schedule else 0.0
+            total_days = max(1, math.ceil(total_span / DAY_SECONDS)) if schedule else 0
             self._log(
                 f"Generating {count} alias(es) over ~{self._format_duration(total_span)} "
-                f"(max {max_per_hour}/hour, {daily_limit}/day)."
+                f"(~{total_days} day(s)) (max {max_per_hour}/hour, {daily_limit}/day)."
             )
 
             if show_rules:

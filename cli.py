@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import asyncio
+import math
 
 import click
 from rich import box
@@ -12,11 +13,14 @@ from rich.table import Table
 from rich.text import Text
 
 from main import (
+    DAY_SECONDS,
     HOUR_SECONDS,
     MAX_PER_DAY,
     MAX_PER_HOUR,
     OVERRIDE_RISK_WARNING,
     analyze_plan,
+    count_generated_today,
+    format_duration,
     generate,
     list_emails,
     resolve_effective_limits,
@@ -124,10 +128,24 @@ def interactive_generate() -> None:
     count = IntPrompt.ask(
         "How many aliases do you want to generate?", default=5, console=console
     )
+
+    preview_today = count_generated_today(None)
+    preview_seconds = (
+        suggested_duration_hours(count, MAX_PER_DAY, max_per_hour, preview_today)
+        * HOUR_SECONDS
+    )
+    preview_days = max(1, math.ceil(preview_seconds / DAY_SECONDS))
+    console.print(
+        f"[dim]At the safe default pace ({max_per_hour}/hour, {MAX_PER_DAY}/day), "
+        f"generating {count} alias(es) will take about {preview_days} day(s) "
+        f"(~{format_duration(preview_seconds)}). The script keeps running "
+        "until they're all generated — it does not stop early.[/]\n"
+    )
+
     daily_limit = IntPrompt.ask(
         "Maximum aliases per calendar day?", default=MAX_PER_DAY, console=console
     )
-    suggested = suggested_duration_hours(count, daily_limit, max_per_hour)
+    suggested = suggested_duration_hours(count, daily_limit, max_per_hour, preview_today)
     duration_hours = FloatPrompt.ask(
         "Spread the run over how many hours?", default=suggested, console=console
     )
@@ -145,9 +163,10 @@ def interactive_generate() -> None:
     )
 
     duration_seconds = duration_hours * HOUR_SECONDS
+    duration_days = max(1, math.ceil(duration_seconds / DAY_SECONDS)) if duration_seconds > 0 else 0
     pace = count / duration_hours if duration_hours > 0 else float("inf")
     warnings = clamp_warnings + analyze_plan(
-        count, duration_seconds, daily_limit, max_per_hour
+        count, duration_seconds, daily_limit, max_per_hour, preview_today
     )
 
     summary_panel(
@@ -156,7 +175,7 @@ def interactive_generate() -> None:
             ("Aliases", str(count)),
             ("Max per hour", f"{max_per_hour}/hour"),
             ("Daily limit", f"{daily_limit}/day"),
-            ("Duration", f"{duration_hours:g} h"),
+            ("Duration", f"{duration_hours:g} h (~{duration_days} day(s))"),
             ("Pace", "instant" if pace == float("inf") else f"~{pace:.1f}/hour"),
             ("Override", "ON — at your own risk" if override_limits else "off (safe defaults)"),
             ("Accounts file", accounts_file or "—"),
