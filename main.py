@@ -16,7 +16,7 @@ from rich.live import Live
 from rich.prompt import FloatPrompt, IntPrompt, Prompt
 from rich.table import Table
 
-from icloud import HideMyEmail
+from icloud import HideMyEmail, random_alias_label
 
 
 DEFAULT_COOKIE_FILE = "cookies/cookie.txt"
@@ -316,6 +316,22 @@ def load_accounts_config(accounts_file: str) -> list[AccountConfig]:
     return accounts
 
 
+def select_account(accounts_file: str, account_name: str) -> AccountConfig:
+    """Return the single account matching ``account_name`` from ``accounts_file``.
+
+    Raises ValueError if no account with that name exists.
+    """
+    accounts = load_accounts_config(accounts_file)
+    for account in accounts:
+        if account.name == account_name:
+            return account
+    available = ", ".join(account.name for account in accounts)
+    raise ValueError(
+        f'No account named "{account_name}" in "{accounts_file}". '
+        f"Available account(s): {available}."
+    )
+
+
 def save_emails(emails: list[str], output_file: str = DEFAULT_EMAILS_FILE) -> None:
     if not emails:
         return
@@ -596,14 +612,19 @@ class RichHideMyEmail(HideMyEmail):
         email = gen_res["result"]["hme"]
         self._log(f'[50%] "{email}" - Successfully generated')
 
-        reserve_res = await self.reserve_email(email)
+        # Mimic a human reading the generated address and typing a label before
+        # reserving it: a short, random pause between the two calls.
+        await asyncio.sleep(random.uniform(1.5, 5.0))
+
+        label = random_alias_label()
+        reserve_res = await self.reserve_email(email, label=label)
         if not reserve_res:
             return None
         if "success" not in reserve_res or not reserve_res["success"]:
             self._log_request_error("reserve email", reserve_res, email)
             return None
 
-        self._log(f'[100%] "{email}" - Successfully reserved')
+        self._log(f'[100%] "{email}" - Successfully reserved as "{label}"')
         await record_generation(self.account_name, email)
         return email
 
@@ -815,7 +836,7 @@ class RichHideMyEmail(HideMyEmail):
 
     async def list(
         self,
-        active: bool,
+        active: Optional[bool],
         search: Optional[str],
         export: Optional[str] = None,
         show_table: bool = True,
@@ -841,7 +862,8 @@ class RichHideMyEmail(HideMyEmail):
 
         rows = []
         for row in all_hme:
-            if row["isActive"] != active:
+            # active is None -> include both active and inactive aliases.
+            if active is not None and row["isActive"] != active:
                 continue
             if search is not None and not re.search(search, row["label"]):
                 continue
@@ -939,7 +961,7 @@ async def generate_account(
 
 async def list_account(
     account: AccountConfig,
-    active: bool,
+    active: Optional[bool],
     search: Optional[str],
     console: Console,
 ) -> tuple[AccountConfig, list[dict[str, str]]]:
@@ -1020,7 +1042,7 @@ async def generate_with_accounts_file(
 
 async def list_with_accounts_file(
     accounts_file: str,
-    active: bool,
+    active: Optional[bool],
     search: Optional[str],
     export: Optional[str] = None,
 ) -> None:
@@ -1056,6 +1078,8 @@ async def generate(
     accounts_file: Optional[str] = None,
     max_per_hour: Optional[int] = None,
     override_limits: bool = False,
+    cookie_file: Optional[str] = None,
+    account_name: Optional[str] = None,
 ) -> None:
     if accounts_file:
         await generate_with_accounts_file(
@@ -1068,7 +1092,10 @@ async def generate(
         )
         return
 
-    async with RichHideMyEmail() as hme:
+    async with RichHideMyEmail(
+        cookie_file=cookie_file or DEFAULT_COOKIE_FILE,
+        account_name=account_name,
+    ) as hme:
         await hme.generate(
             count,
             daily_limit,
@@ -1079,16 +1106,21 @@ async def generate(
 
 
 async def list_emails(
-    active: bool,
+    active: Optional[bool],
     search: Optional[str],
     export: Optional[str] = None,
     accounts_file: Optional[str] = None,
+    cookie_file: Optional[str] = None,
+    account_name: Optional[str] = None,
 ) -> None:
     if accounts_file:
         await list_with_accounts_file(accounts_file, active, search, export)
         return
 
-    async with RichHideMyEmail() as hme:
+    async with RichHideMyEmail(
+        cookie_file=cookie_file or DEFAULT_COOKIE_FILE,
+        account_name=account_name,
+    ) as hme:
         await hme.list(active, search, export)
 
 

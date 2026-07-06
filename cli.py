@@ -14,6 +14,7 @@ from rich.text import Text
 
 from main import (
     DAY_SECONDS,
+    DEFAULT_COOKIE_FILE,
     HOUR_SECONDS,
     MAX_PER_DAY,
     MAX_PER_HOUR,
@@ -23,7 +24,9 @@ from main import (
     format_duration,
     generate,
     list_emails,
+    load_accounts_config,
     resolve_effective_limits,
+    select_account,
     suggested_duration_hours,
 )
 import licensing
@@ -68,6 +71,66 @@ def summary_panel(title: str, rows: list[tuple[str, str]]) -> None:
     console.print(
         Panel(grid, title=f"[bold {ACCENT}]{title}", border_style=ACCENT, box=box.ROUNDED)
     )
+
+
+def select_single_account(default_accounts_file: str = "accounts.json"):
+    """Interactively pick which single account to run against.
+
+    Returns a ``(cookie_file, account_name)`` tuple. ``(None, None)`` means
+    "use the default cookie file" (``cookies/cookie.txt``).
+    """
+    if not Confirm.ask(
+        "Pick a specific account (from an accounts JSON file)?",
+        default=False,
+        console=console,
+    ):
+        console.print(f"[dim]Using the default cookie file ({DEFAULT_COOKIE_FILE}).[/]")
+        return None, None
+
+    accounts_file = Prompt.ask(
+        "Path to accounts file", default=default_accounts_file, console=console
+    )
+    try:
+        accounts = load_accounts_config(accounts_file)
+    except ValueError as exc:
+        console.print(f"[yellow]⚠ {exc}[/]")
+        console.print(f"[dim]Falling back to the default cookie file ({DEFAULT_COOKIE_FILE}).[/]")
+        return None, None
+
+    table = Table(box=None, show_header=False, padding=(0, 2))
+    table.add_column(justify="center", style=f"bold {ACCENT}")
+    table.add_column(style="bold")
+    table.add_column(style="dim")
+    for index, account in enumerate(accounts, start=1):
+        table.add_row(f"[{index}]", account.name, account.cookie_file)
+    console.print(
+        Panel(table, title="[bold]Accounts", border_style="cyan", box=box.ROUNDED)
+    )
+
+    choice = IntPrompt.ask(
+        "Which account?",
+        choices=[str(i) for i in range(1, len(accounts) + 1)],
+        default=1,
+        console=console,
+    )
+    account = accounts[choice - 1]
+    return account.cookie_file, account.name
+
+
+def resolve_cli_account(account: str | None, accounts_file: str | None):
+    """Resolve the ``--account NAME`` option to ``(cookie_file, account_name)``.
+
+    Returns ``(None, None)`` when no single account was requested. Exits with a
+    clear error if the named account cannot be found.
+    """
+    if not account:
+        return None, None
+    try:
+        selected = select_account(accounts_file or "accounts.json", account)
+    except ValueError as exc:
+        console.print(f"[red]✗ {exc}[/]")
+        raise SystemExit(1)
+    return selected.cookie_file, selected.name
 
 
 # --------------------------------------------------------------------------- #
@@ -151,12 +214,18 @@ def interactive_generate() -> None:
     )
 
     accounts_file = None
+    cookie_file = None
+    account_name = None
     if Confirm.ask(
-        "Use a multi-account JSON file?", default=False, console=console
+        "Use a multi-account JSON file (run all accounts in parallel)?",
+        default=False,
+        console=console,
     ):
         accounts_file = Prompt.ask(
             "Path to accounts file", default="accounts.json", console=console
         )
+    else:
+        cookie_file, account_name = select_single_account()
 
     daily_limit, max_per_hour, clamp_warnings = resolve_effective_limits(
         daily_limit, max_per_hour, override_limits
@@ -179,6 +248,7 @@ def interactive_generate() -> None:
             ("Pace", "instant" if pace == float("inf") else f"~{pace:.1f}/hour"),
             ("Override", "ON — at your own risk" if override_limits else "off (safe defaults)"),
             ("Accounts file", accounts_file or "—"),
+            ("Account", account_name or ("all" if accounts_file else "default")),
         ],
     )
 
@@ -197,6 +267,8 @@ def interactive_generate() -> None:
             accounts_file,
             max_per_hour=max_per_hour,
             override_limits=override_limits,
+            cookie_file=cookie_file,
+            account_name=account_name,
         )
     )
 
@@ -204,15 +276,14 @@ def interactive_generate() -> None:
 def interactive_list() -> None:
     console.rule(f"[bold {ACCENT}]List emails")
 
-    active = (
-        Prompt.ask(
-            "Which emails to show?",
-            choices=["active", "inactive"],
-            default="active",
-            console=console,
-        )
-        == "active"
+    filter_choice = Prompt.ask(
+        "Which emails to show?",
+        choices=["active", "inactive", "all"],
+        default="all",
+        console=console,
     )
+    # "all" -> None means no active/inactive filter (everything Apple returns).
+    active = {"active": True, "inactive": False, "all": None}[filter_choice]
     search = (
         Prompt.ask(
             "Search filter (regex, leave empty for none)",
@@ -230,24 +301,40 @@ def interactive_list() -> None:
         )
 
     accounts_file = None
+    cookie_file = None
+    account_name = None
     if Confirm.ask(
-        "Use a multi-account JSON file?", default=False, console=console
+        "Use a multi-account JSON file (list all accounts)?",
+        default=False,
+        console=console,
     ):
         accounts_file = Prompt.ask(
             "Path to accounts file", default="accounts.json", console=console
         )
+    else:
+        cookie_file, account_name = select_single_account()
 
     summary_panel(
         "Review",
         [
-            ("Filter", "active" if active else "inactive"),
+            ("Filter", filter_choice),
             ("Search", search or "—"),
             ("Export", export or "—"),
             ("Accounts file", accounts_file or "—"),
+            ("Account", account_name or ("all" if accounts_file else "default")),
         ],
     )
 
-    run_async(list_emails(active, search, export, accounts_file))
+    run_async(
+        list_emails(
+            active,
+            search,
+            export,
+            accounts_file,
+            cookie_file=cookie_file,
+            account_name=account_name,
+        )
+    )
 
 
 def run_interactive_menu() -> None:
@@ -343,11 +430,23 @@ def cli(ctx):
         "--count/--daily-limit/--max-per-hour/--override-limits."
     ),
 )
+@click.option(
+    "--account",
+    default=None,
+    help=(
+        "Run against a single named account defined in the accounts file "
+        '(default "accounts.json", or --accounts-file). Cannot be combined '
+        "with a multi-account run."
+    ),
+)
 def generatecommand(
-    count, daily_limit, max_per_hour, override_limits, duration_hours, accounts_file
+    count, daily_limit, max_per_hour, override_limits, duration_hours, accounts_file, account
 ):
     "Generate aliases at a safe, human pace"
     licensing.require_license(console)
+    cookie_file, account_name = resolve_cli_account(account, accounts_file)
+    if account_name:
+        accounts_file = None
     if override_limits:
         console.print(f"[bold red]⚠ {OVERRIDE_RISK_WARNING}[/]")
     run_async(
@@ -358,6 +457,8 @@ def generatecommand(
             accounts_file,
             max_per_hour=max_per_hour,
             override_limits=override_limits,
+            cookie_file=cookie_file,
+            account_name=account_name,
         )
     )
 
@@ -365,6 +466,16 @@ def generatecommand(
 @click.command(name="list")
 @click.option(
     "--active/--inactive", default=True, help="Filter Active / Inactive emails"
+)
+@click.option(
+    "--all",
+    "show_all",
+    is_flag=True,
+    default=False,
+    help=(
+        "List/export ALL aliases (both active and inactive), matching the full "
+        "count you see in Hide My Email. Overrides --active/--inactive."
+    ),
 )
 @click.option("--search", default=None, help="Search emails")
 @click.option(
@@ -377,10 +488,32 @@ def generatecommand(
     default=None,
     help="Path to a JSON file that defines multiple iCloud accounts.",
 )
-def listcommand(active, search, export, accounts_file):
+@click.option(
+    "--account",
+    default=None,
+    help=(
+        "List a single named account defined in the accounts file "
+        '(default "accounts.json", or --accounts-file).'
+    ),
+)
+def listcommand(active, show_all, search, export, accounts_file, account):
     "List emails"
     licensing.require_license(console)
-    run_async(list_emails(active, search, export, accounts_file))
+    cookie_file, account_name = resolve_cli_account(account, accounts_file)
+    if account_name:
+        accounts_file = None
+    if show_all:
+        active = None
+    run_async(
+        list_emails(
+            active,
+            search,
+            export,
+            accounts_file,
+            cookie_file=cookie_file,
+            account_name=account_name,
+        )
+    )
 
 
 @click.command(name="activate")
