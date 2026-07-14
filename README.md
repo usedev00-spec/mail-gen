@@ -164,7 +164,18 @@ all generated — it does not stop early.
 
 Maximum aliases per calendar day? (15): 15
 Spread the run over how many hours? (313.0): 313
-Use a multi-account JSON file? [y/n] (n): n
+
+╭─────────────────── Accounts (accounts.json) ───────────────────╮
+│   [a]    all accounts      run the 5 account(s) below in parallel │
+│   [1]    main              cookies/cookie.txt                   │
+│   [2]    iCloud2           cookies/secondary.txt                │
+│   [3]    iCloud3           cookies/third.txt                    │
+│   [4]    iCloud4           cookies/fourth.txt                   │
+│   [5]    iCloud5           cookies/fifth.txt                    │
+│   [0]    default cookie    cookies/cookie.txt                   │
+╰─────────────────────────────────────────────────────────────────╯
+Which account(s)? Numbers or names, comma-separated — e.g. "1,2,4" (all): 1,2,4,5
+Selected 4/5 account(s): main, iCloud2, iCloud4, iCloud5
 
 ╭──────────────────── Review ─────────────────────╮
 │         Aliases    200                           │
@@ -173,7 +184,8 @@ Use a multi-account JSON file? [y/n] (n): n
 │        Duration    313 h (~14 day(s))            │
 │            Pace    ~0.6/hour                     │
 │        Override    off (safe defaults)           │
-│   Accounts file    —                             │
+│   Accounts file    accounts.json                 │
+│      Account(s)    main, iCloud2, iCloud4, iCloud5 │
 ╰───────────────────────────────────────────────────╯
 Proceed? [y/n] (y): y
 ```
@@ -186,6 +198,7 @@ Que veulent dire les questions ?
 | **How many aliases…** | Combien d'alias tu veux créer **au total** — pas de plafond ; l'outil calcule et affiche tout de suite combien de temps ça prendra pour rester safe |
 | **Maximum… per calendar day** | Plafond d'alias par jour calendaire (15 par défaut, en sécurité) |
 | **Spread the run over how many hours** | Sur combien d'heures étaler la génération (pré-rempli avec la durée sûre calculée juste au-dessus) |
+| **Which account(s)?** | Quels comptes utiliser, si un `accounts.json` existe : `all` (défaut) pour tous, des numéros ou noms séparés par des virgules pour un sous-ensemble (ex. `1,2,4` ou `main,iCloud4`), un seul numéro pour un seul compte, ou `0` pour le cookie par défaut |
 
 > ✅ **Le script ne s'arrête jamais avant d'avoir généré le nombre demandé.** Si tu demandes 200 alias, il tourne le temps qu'il faut (plusieurs jours si besoin) en respectant 5/heure et 15/jour — il ne s'arrête pas à 15 puis abandonne. Il faut juste **laisser le terminal ouvert** pendant toute la durée (voir plus bas pour lancer ça en arrière-plan).
 
@@ -228,6 +241,8 @@ Pour dépasser ces limites en connaissance de cause :
   ```
 
 Sans `--override-limits`, `--daily-limit 40` et `--max-per-hour 10` seraient silencieusement ramenés à 15 et 5. Le flag doit être **explicite** — ce n'est jamais activé par accident.
+
+En mode override, la durée proposée correspond **exactement au rythme demandé** : `count / max-per-hour`. Exemple : 25 alias à 5/heure → durée suggérée de **5 h**, et le run se termine bien dans cette fenêtre (pas de rallongement automatique au rythme « confortable » de 4/heure utilisé hors override). L'historique du jour est aussi ignoré dans le calcul, comme pendant la génération. La durée n'est rallongée que si elle est mathématiquement impossible (ex. 50 alias avec un plafond de 25/jour ne tiennent pas en 10 h).
 
 > ⚠️ Dépasser le rythme sûr augmente le risque de rate-limit, de blocage temporaire ou d'autre restriction sur le compte iCloud/Apple. À utiliser à tes propres risques.
 
@@ -288,6 +303,7 @@ python3 cli.py generate --help
 | `--override-limits` | Active volontairement le dépassement des limites sûres, à tes risques |
 | `--duration` | Nombre d'heures pour étaler le run (sinon, rythme sûr automatique) |
 | `--accounts-file` | Fichier JSON multi-comptes (voir ci-dessous) |
+| `--account` | Restreint le run à certains comptes du fichier (répétable ou séparés par des virgules : `--account "main,iCloud2"`) |
 
 ---
 
@@ -327,9 +343,19 @@ Chaque `cookie_file` pointe vers un fichier du dossier **[`cookies/`](./cookies)
 # Générer pour tous les comptes du fichier (--count obligatoire pour le multi-compte)
 python3 cli.py generate --accounts-file accounts.json --count 15
 
+# Générer pour un sous-ensemble de comptes seulement (ex. 4 comptes sur 5) :
+# répète --account, ou passe une liste séparée par des virgules
+python3 cli.py generate --count 15 --account "main,iCloud2,iCloud4,iCloud5"
+python3 cli.py generate --count 15 --account main --account iCloud2
+
 # Lister sur tous les comptes, avec export
 python3 cli.py list --accounts-file accounts.json --export tous_les_comptes.csv
+
+# Lister seulement certains comptes
+python3 cli.py list --account "iCloud2,iCloud3"
 ```
+
+> 💡 Dans le **menu interactif**, plus besoin de flags : dès qu'un `accounts.json` existe, un tableau des comptes s'affiche et tu tapes simplement les numéros voulus (ex. `1,2,4,5` pour 4 comptes sur 5), `all` pour tous, ou `0` pour le cookie par défaut.
 
 Pendant la génération multi-comptes, un **tableau de bord en direct** affiche une ligne par compte avec son propre compte à rebours :
 

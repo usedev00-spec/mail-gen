@@ -141,17 +141,27 @@ def suggested_duration_hours(
     daily_limit: int,
     max_per_hour: int = MAX_PER_HOUR,
     already_generated_today: int = 0,
+    override_limits: bool = False,
 ) -> float:
-    """A comfortable, human run length for `count` aliases (in hours)."""
+    """A comfortable, human run length for `count` aliases (in hours).
+
+    In override mode the user explicitly asked for `max_per_hour` per hour, so
+    the suggestion is exactly `count / max_per_hour` (e.g. 25 aliases at
+    5/hour -> 5 h), not the slower comfortable pace — only stretched further
+    if the daily limit makes that impossible.
+    """
     if count <= 1:
         return 1.0
-    comfortable = count / COMFORTABLE_PER_HOUR
     min_safe = (
         minimum_safe_duration_seconds(
             count, daily_limit, max_per_hour, already_generated_today
         )
         / HOUR_SECONDS
     )
+    if override_limits:
+        exact = count / max_per_hour
+        return round(max(exact, min_safe), 2)
+    comfortable = count / COMFORTABLE_PER_HOUR
     return float(max(1, math.ceil(max(comfortable, min_safe))))
 
 
@@ -316,20 +326,34 @@ def load_accounts_config(accounts_file: str) -> list[AccountConfig]:
     return accounts
 
 
+def filter_accounts(
+    accounts: builtins.list[AccountConfig], names: builtins.list[str]
+) -> builtins.list[AccountConfig]:
+    """Return the accounts matching ``names``, in the order the names are given.
+
+    Raises ValueError if any name has no matching account.
+    """
+    by_name = {account.name: account for account in accounts}
+    unknown = [name for name in names if name not in by_name]
+    if unknown:
+        available = ", ".join(account.name for account in accounts)
+        raise ValueError(
+            f'Unknown account(s): {", ".join(unknown)}. '
+            f"Available account(s): {available}."
+        )
+    return [by_name[name] for name in names]
+
+
 def select_account(accounts_file: str, account_name: str) -> AccountConfig:
     """Return the single account matching ``account_name`` from ``accounts_file``.
 
     Raises ValueError if no account with that name exists.
     """
     accounts = load_accounts_config(accounts_file)
-    for account in accounts:
-        if account.name == account_name:
-            return account
-    available = ", ".join(account.name for account in accounts)
-    raise ValueError(
-        f'No account named "{account_name}" in "{accounts_file}". '
-        f"Available account(s): {available}."
-    )
+    try:
+        return filter_accounts(accounts, [account_name])[0]
+    except ValueError as exc:
+        raise ValueError(f'{exc} (accounts file: "{accounts_file}")') from exc
 
 
 def save_emails(emails: list[str], output_file: str = DEFAULT_EMAILS_FILE) -> None:
@@ -739,13 +763,18 @@ class RichHideMyEmail(HideMyEmail):
         duration_hours: Optional[float],
         max_per_hour: int = MAX_PER_HOUR,
         already_generated_today: int = 0,
+        override_limits: bool = False,
     ) -> float:
         if duration_hours is not None:
             return max(0.0, duration_hours)
         return FloatPrompt.ask(
             "Spread the run over how many hours?",
             default=suggested_duration_hours(
-                count, daily_limit, max_per_hour, already_generated_today
+                count,
+                daily_limit,
+                max_per_hour,
+                already_generated_today,
+                override_limits,
             ),
             console=self.console,
         )
@@ -790,7 +819,12 @@ class RichHideMyEmail(HideMyEmail):
             )
 
             duration_hours = self._resolve_duration_hours(
-                count, daily_limit, duration_hours, max_per_hour, generated_today
+                count,
+                daily_limit,
+                duration_hours,
+                max_per_hour,
+                generated_today,
+                override_limits,
             )
             duration_seconds = duration_hours * HOUR_SECONDS
 
@@ -981,10 +1015,14 @@ async def generate_with_accounts_file(
     duration_hours: Optional[float] = None,
     max_per_hour: Optional[int] = None,
     override_limits: bool = False,
+    account_names: Optional[builtins.list[str]] = None,
 ) -> None:
     console = Console()
     try:
         accounts = load_accounts_config(accounts_file)
+        total_accounts = len(accounts)
+        if account_names:
+            accounts = filter_accounts(accounts, account_names)
     except ValueError as exc:
         console.log(f"[bold red][ERR][/] - {exc}")
         return
@@ -998,9 +1036,16 @@ async def generate_with_accounts_file(
         return
 
     console.rule()
-    console.log(
-        f'Loaded {len(accounts)} account(s) from "{accounts_file}". Running generation in parallel.'
-    )
+    if len(accounts) != total_accounts:
+        selected = ", ".join(account.name for account in accounts)
+        console.log(
+            f"Running {len(accounts)} of {total_accounts} account(s) from "
+            f'"{accounts_file}" ({selected}) in parallel.'
+        )
+    else:
+        console.log(
+            f'Loaded {len(accounts)} account(s) from "{accounts_file}". Running generation in parallel.'
+        )
     console.rule()
 
     board = MultiAccountStatusBoard(console, [account.name for account in accounts])
@@ -1045,10 +1090,13 @@ async def list_with_accounts_file(
     active: Optional[bool],
     search: Optional[str],
     export: Optional[str] = None,
+    account_names: Optional[builtins.list[str]] = None,
 ) -> None:
     console = Console()
     try:
         accounts = load_accounts_config(accounts_file)
+        if account_names:
+            accounts = filter_accounts(accounts, account_names)
     except ValueError as exc:
         console.log(f"[bold red][ERR][/] - {exc}")
         return
@@ -1080,6 +1128,7 @@ async def generate(
     override_limits: bool = False,
     cookie_file: Optional[str] = None,
     account_name: Optional[str] = None,
+    account_names: Optional[builtins.list[str]] = None,
 ) -> None:
     if accounts_file:
         await generate_with_accounts_file(
@@ -1089,6 +1138,7 @@ async def generate(
             duration_hours,
             max_per_hour=max_per_hour,
             override_limits=override_limits,
+            account_names=account_names,
         )
         return
 
@@ -1112,9 +1162,12 @@ async def list_emails(
     accounts_file: Optional[str] = None,
     cookie_file: Optional[str] = None,
     account_name: Optional[str] = None,
+    account_names: Optional[builtins.list[str]] = None,
 ) -> None:
     if accounts_file:
-        await list_with_accounts_file(accounts_file, active, search, export)
+        await list_with_accounts_file(
+            accounts_file, active, search, export, account_names=account_names
+        )
         return
 
     async with RichHideMyEmail(

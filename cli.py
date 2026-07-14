@@ -2,6 +2,7 @@
 
 import asyncio
 import math
+import re
 
 import click
 from rich import box
@@ -21,12 +22,12 @@ from main import (
     OVERRIDE_RISK_WARNING,
     analyze_plan,
     count_generated_today,
+    filter_accounts,
     format_duration,
     generate,
     list_emails,
     load_accounts_config,
     resolve_effective_limits,
-    select_account,
     suggested_duration_hours,
 )
 import licensing
@@ -73,64 +74,134 @@ def summary_panel(title: str, rows: list[tuple[str, str]]) -> None:
     )
 
 
-def select_single_account(default_accounts_file: str = "accounts.json"):
-    """Interactively pick which single account to run against.
+def pick_accounts(default_accounts_file: str = "accounts.json"):
+    """Interactively pick which account(s) to run against.
 
-    Returns a ``(cookie_file, account_name)`` tuple. ``(None, None)`` means
-    "use the default cookie file" (``cookies/cookie.txt``).
+    Returns ``(accounts_file, account_names, cookie_file, account_name)``:
+
+    - several accounts:  ``(accounts_file, [names] or None for all, None, None)``
+    - a single account:  ``(None, None, cookie_file, name)``
+    - default cookie:    ``(None, None, None, None)`` (``cookies/cookie.txt``)
     """
-    if not Confirm.ask(
-        "Pick a specific account (from an accounts JSON file)?",
-        default=False,
-        console=console,
-    ):
-        console.print(f"[dim]Using the default cookie file ({DEFAULT_COOKIE_FILE}).[/]")
-        return None, None
-
-    accounts_file = Prompt.ask(
-        "Path to accounts file", default=default_accounts_file, console=console
-    )
+    accounts_file = default_accounts_file
     try:
         accounts = load_accounts_config(accounts_file)
-    except ValueError as exc:
-        console.print(f"[yellow]⚠ {exc}[/]")
-        console.print(f"[dim]Falling back to the default cookie file ({DEFAULT_COOKIE_FILE}).[/]")
-        return None, None
+    except ValueError:
+        accounts = None
+
+    if accounts is None:
+        # No usable accounts file next to the script: ask for a path, or fall
+        # back to the default cookie file.
+        if not Confirm.ask(
+            "Pick accounts from an accounts JSON file?",
+            default=False,
+            console=console,
+        ):
+            console.print(f"[dim]Using the default cookie file ({DEFAULT_COOKIE_FILE}).[/]")
+            return None, None, None, None
+
+        accounts_file = Prompt.ask(
+            "Path to accounts file", default=default_accounts_file, console=console
+        )
+        try:
+            accounts = load_accounts_config(accounts_file)
+        except ValueError as exc:
+            console.print(f"[yellow]⚠ {exc}[/]")
+            console.print(f"[dim]Falling back to the default cookie file ({DEFAULT_COOKIE_FILE}).[/]")
+            return None, None, None, None
 
     table = Table(box=None, show_header=False, padding=(0, 2))
     table.add_column(justify="center", style=f"bold {ACCENT}")
     table.add_column(style="bold")
     table.add_column(style="dim")
+    # "[a]" needs escaping, otherwise Rich would parse it as a markup tag.
+    table.add_row(r"\[a]", "all accounts", f"run the {len(accounts)} account(s) below in parallel")
     for index, account in enumerate(accounts, start=1):
         table.add_row(f"[{index}]", account.name, account.cookie_file)
+    table.add_row("[0]", "default cookie", DEFAULT_COOKIE_FILE)
     console.print(
-        Panel(table, title="[bold]Accounts", border_style="cyan", box=box.ROUNDED)
+        Panel(
+            table,
+            title=f"[bold]Accounts ({accounts_file})",
+            border_style="cyan",
+            box=box.ROUNDED,
+        )
     )
 
-    choice = IntPrompt.ask(
-        "Which account?",
-        choices=[str(i) for i in range(1, len(accounts) + 1)],
-        default=1,
-        console=console,
-    )
-    account = accounts[choice - 1]
-    return account.cookie_file, account.name
+    while True:
+        raw = Prompt.ask(
+            'Which account(s)? Numbers or names, comma-separated — e.g. "1,2,4"',
+            default="all",
+            console=console,
+        )
+        tokens = [token for token in re.split(r"[\s,]+", raw.strip()) if token]
+        if not tokens or raw.strip().lower() in ("a", "all"):
+            selected = list(accounts)
+        elif tokens == ["0"]:
+            console.print(f"[dim]Using the default cookie file ({DEFAULT_COOKIE_FILE}).[/]")
+            return None, None, None, None
+        else:
+            selected = []
+            error = None
+            for token in tokens:
+                if token.isdigit():
+                    index = int(token)
+                    if not 1 <= index <= len(accounts):
+                        error = f'"{token}" is out of range (1-{len(accounts)}).'
+                        break
+                    account = accounts[index - 1]
+                else:
+                    matches = [a for a in accounts if a.name == token]
+                    if not matches:
+                        error = f'No account named "{token}".'
+                        break
+                    account = matches[0]
+                if account not in selected:
+                    selected.append(account)
+            if error:
+                console.print(f"[yellow]⚠ {error} Try again.[/]")
+                continue
+
+        names = ", ".join(account.name for account in selected)
+        console.print(
+            f"[dim]Selected {len(selected)}/{len(accounts)} account(s): {names}[/]"
+        )
+
+        if len(selected) == 1:
+            account = selected[0]
+            return None, None, account.cookie_file, account.name
+        if len(selected) == len(accounts):
+            return accounts_file, None, None, None
+        return accounts_file, [account.name for account in selected], None, None
 
 
-def resolve_cli_account(account: str | None, accounts_file: str | None):
-    """Resolve the ``--account NAME`` option to ``(cookie_file, account_name)``.
+def resolve_cli_accounts(account_options, accounts_file):
+    """Resolve one or more ``--account NAME`` options.
 
-    Returns ``(None, None)`` when no single account was requested. Exits with a
-    clear error if the named account cannot be found.
+    Returns ``(accounts_file, account_names, cookie_file, account_name)`` with
+    the same meaning as :func:`pick_accounts`. Exits with a clear error if a
+    named account cannot be found.
     """
-    if not account:
-        return None, None
+    names = [
+        name.strip()
+        for raw in account_options
+        for name in raw.split(",")
+        if name.strip()
+    ]
+    names = list(dict.fromkeys(names))
+    if not names:
+        return accounts_file, None, None, None
+
+    path = accounts_file or "accounts.json"
     try:
-        selected = select_account(accounts_file or "accounts.json", account)
+        selected = filter_accounts(load_accounts_config(path), names)
     except ValueError as exc:
-        console.print(f"[red]✗ {exc}[/]")
+        console.print(f"[red]✗ {exc} (accounts file: \"{path}\")[/]")
         raise SystemExit(1)
-    return selected.cookie_file, selected.name
+
+    if len(selected) == 1:
+        return None, None, selected[0].cookie_file, selected[0].name
+    return path, names, None, None
 
 
 # --------------------------------------------------------------------------- #
@@ -191,45 +262,33 @@ def interactive_generate() -> None:
     count = IntPrompt.ask(
         "How many aliases do you want to generate?", default=5, console=console
     )
-
-    preview_today = count_generated_today(None)
-    preview_seconds = (
-        suggested_duration_hours(count, MAX_PER_DAY, max_per_hour, preview_today)
-        * HOUR_SECONDS
+    daily_limit = IntPrompt.ask(
+        "Maximum aliases per calendar day?", default=MAX_PER_DAY, console=console
     )
+    daily_limit, max_per_hour, clamp_warnings = resolve_effective_limits(
+        daily_limit, max_per_hour, override_limits
+    )
+
+    # In override mode the run plan ignores today's history (mirrors generate()).
+    preview_today = 0 if override_limits else count_generated_today(None)
+    suggested = suggested_duration_hours(
+        count, daily_limit, max_per_hour, preview_today, override_limits
+    )
+    preview_seconds = suggested * HOUR_SECONDS
     preview_days = max(1, math.ceil(preview_seconds / DAY_SECONDS))
+    pace_label = "requested pace" if override_limits else "safe default pace"
     console.print(
-        f"[dim]At the safe default pace ({max_per_hour}/hour, {MAX_PER_DAY}/day), "
+        f"[dim]At the {pace_label} ({max_per_hour}/hour, {daily_limit}/day), "
         f"generating {count} alias(es) will take about {preview_days} day(s) "
         f"(~{format_duration(preview_seconds)}). The script keeps running "
         "until they're all generated — it does not stop early.[/]\n"
     )
 
-    daily_limit = IntPrompt.ask(
-        "Maximum aliases per calendar day?", default=MAX_PER_DAY, console=console
-    )
-    suggested = suggested_duration_hours(count, daily_limit, max_per_hour, preview_today)
     duration_hours = FloatPrompt.ask(
         "Spread the run over how many hours?", default=suggested, console=console
     )
 
-    accounts_file = None
-    cookie_file = None
-    account_name = None
-    if Confirm.ask(
-        "Use a multi-account JSON file (run all accounts in parallel)?",
-        default=False,
-        console=console,
-    ):
-        accounts_file = Prompt.ask(
-            "Path to accounts file", default="accounts.json", console=console
-        )
-    else:
-        cookie_file, account_name = select_single_account()
-
-    daily_limit, max_per_hour, clamp_warnings = resolve_effective_limits(
-        daily_limit, max_per_hour, override_limits
-    )
+    accounts_file, account_names, cookie_file, account_name = pick_accounts()
 
     duration_seconds = duration_hours * HOUR_SECONDS
     duration_days = max(1, math.ceil(duration_seconds / DAY_SECONDS)) if duration_seconds > 0 else 0
@@ -248,7 +307,15 @@ def interactive_generate() -> None:
             ("Pace", "instant" if pace == float("inf") else f"~{pace:.1f}/hour"),
             ("Override", "ON — at your own risk" if override_limits else "off (safe defaults)"),
             ("Accounts file", accounts_file or "—"),
-            ("Account", account_name or ("all" if accounts_file else "default")),
+            (
+                "Account(s)",
+                account_name
+                or (
+                    (", ".join(account_names) if account_names else "all")
+                    if accounts_file
+                    else "default"
+                ),
+            ),
         ],
     )
 
@@ -269,6 +336,7 @@ def interactive_generate() -> None:
             override_limits=override_limits,
             cookie_file=cookie_file,
             account_name=account_name,
+            account_names=account_names,
         )
     )
 
@@ -300,19 +368,7 @@ def interactive_list() -> None:
             "CSV file path", default="emails_list.csv", console=console
         )
 
-    accounts_file = None
-    cookie_file = None
-    account_name = None
-    if Confirm.ask(
-        "Use a multi-account JSON file (list all accounts)?",
-        default=False,
-        console=console,
-    ):
-        accounts_file = Prompt.ask(
-            "Path to accounts file", default="accounts.json", console=console
-        )
-    else:
-        cookie_file, account_name = select_single_account()
+    accounts_file, account_names, cookie_file, account_name = pick_accounts()
 
     summary_panel(
         "Review",
@@ -321,7 +377,15 @@ def interactive_list() -> None:
             ("Search", search or "—"),
             ("Export", export or "—"),
             ("Accounts file", accounts_file or "—"),
-            ("Account", account_name or ("all" if accounts_file else "default")),
+            (
+                "Account(s)",
+                account_name
+                or (
+                    (", ".join(account_names) if account_names else "all")
+                    if accounts_file
+                    else "default"
+                ),
+            ),
         ],
     )
 
@@ -333,6 +397,7 @@ def interactive_list() -> None:
             accounts_file,
             cookie_file=cookie_file,
             account_name=account_name,
+            account_names=account_names,
         )
     )
 
@@ -432,11 +497,13 @@ def cli(ctx):
 )
 @click.option(
     "--account",
-    default=None,
+    multiple=True,
     help=(
-        "Run against a single named account defined in the accounts file "
-        '(default "accounts.json", or --accounts-file). Cannot be combined '
-        "with a multi-account run."
+        "Run only the named account(s) from the accounts file "
+        '(default "accounts.json", or --accounts-file). Repeat the flag or '
+        'pass a comma-separated list: --account main --account iCloud2, or '
+        '--account "main,iCloud2". Without it, an --accounts-file run uses '
+        "all accounts."
     ),
 )
 def generatecommand(
@@ -444,9 +511,9 @@ def generatecommand(
 ):
     "Generate aliases at a safe, human pace"
     licensing.require_license(console)
-    cookie_file, account_name = resolve_cli_account(account, accounts_file)
-    if account_name:
-        accounts_file = None
+    accounts_file, account_names, cookie_file, account_name = resolve_cli_accounts(
+        account, accounts_file
+    )
     if override_limits:
         console.print(f"[bold red]⚠ {OVERRIDE_RISK_WARNING}[/]")
     run_async(
@@ -459,6 +526,7 @@ def generatecommand(
             override_limits=override_limits,
             cookie_file=cookie_file,
             account_name=account_name,
+            account_names=account_names,
         )
     )
 
@@ -490,18 +558,19 @@ def generatecommand(
 )
 @click.option(
     "--account",
-    default=None,
+    multiple=True,
     help=(
-        "List a single named account defined in the accounts file "
-        '(default "accounts.json", or --accounts-file).'
+        "List only the named account(s) from the accounts file "
+        '(default "accounts.json", or --accounts-file). Repeat the flag or '
+        "pass a comma-separated list."
     ),
 )
 def listcommand(active, show_all, search, export, accounts_file, account):
     "List emails"
     licensing.require_license(console)
-    cookie_file, account_name = resolve_cli_account(account, accounts_file)
-    if account_name:
-        accounts_file = None
+    accounts_file, account_names, cookie_file, account_name = resolve_cli_accounts(
+        account, accounts_file
+    )
     if show_all:
         active = None
     run_async(
@@ -512,6 +581,7 @@ def listcommand(active, show_all, search, export, accounts_file, account):
             accounts_file,
             cookie_file=cookie_file,
             account_name=account_name,
+            account_names=account_names,
         )
     )
 

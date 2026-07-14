@@ -15,6 +15,7 @@ from main import (
     AccountConfig,
     build_generation_schedule,
     count_generated_today,
+    filter_accounts,
     load_accounts_config,
     record_generation,
     resolve_effective_limits,
@@ -53,6 +54,62 @@ class ResolveEffectiveLimitsTest(unittest.TestCase):
         self.assertEqual(daily, 100)
         self.assertEqual(hourly, 50)
         self.assertEqual(warnings, [])
+
+
+class OverridePaceTest(unittest.TestCase):
+    """Override mode must run at exactly max_per_hour, not the slower
+    comfortable pace (e.g. 25 aliases at 5/hour -> 5 h, not 7 h)."""
+
+    def test_suggested_duration_is_count_over_max_per_hour(self):
+        self.assertEqual(
+            suggested_duration_hours(25, 25, 5, 0, override_limits=True), 5.0
+        )
+
+    def test_suggested_duration_without_override_keeps_comfortable_pace(self):
+        # 25 / COMFORTABLE_PER_HOUR (4) = 6.25 -> ceil -> 7 h.
+        self.assertEqual(suggested_duration_hours(25, 25, 5, 0), 7.0)
+
+    def test_override_still_stretches_when_daily_limit_binds(self):
+        # 50 aliases at 25/day can't fit in 10 h: the day window must bind.
+        suggested = suggested_duration_hours(50, 25, 5, 0, override_limits=True)
+        self.assertGreater(suggested, 24.0)
+
+    def test_25_aliases_in_5_hours_is_not_extended(self):
+        import random
+
+        for seed in range(25):
+            random.seed(seed)
+            schedule = build_generation_schedule(25, 5 * 3600, 25, 5, 0)
+            self.assertEqual(len(schedule), 25)
+            # The run must finish within the requested 5 h window (the +30 s
+            # per-window safety buffer allows at most a few minutes of slack).
+            self.assertLessEqual(schedule[-1], 5 * 3600 + 5 * 60)
+            # And still never exceed 5 per rolling hour.
+            for i in range(5, 25):
+                self.assertGreaterEqual(schedule[i] - schedule[i - 5], 3600)
+
+
+class FilterAccountsTest(unittest.TestCase):
+    def setUp(self):
+        self.accounts = [
+            AccountConfig(name="main", cookie_file="a.txt"),
+            AccountConfig(name="iCloud2", cookie_file="b.txt"),
+            AccountConfig(name="iCloud3", cookie_file="c.txt"),
+        ]
+
+    def test_returns_only_the_named_accounts_in_given_order(self):
+        selected = filter_accounts(self.accounts, ["iCloud3", "main"])
+        self.assertEqual([a.name for a in selected], ["iCloud3", "main"])
+
+    def test_unknown_name_raises_with_available_accounts_listed(self):
+        with self.assertRaises(ValueError) as ctx:
+            filter_accounts(self.accounts, ["main", "nope"])
+        message = str(ctx.exception)
+        self.assertIn("nope", message)
+        self.assertIn("iCloud2", message)
+
+    def test_empty_names_returns_empty_list(self):
+        self.assertEqual(filter_accounts(self.accounts, []), [])
 
 
 class LoadAccountsConfigTest(unittest.TestCase):
