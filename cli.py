@@ -514,8 +514,6 @@ def generatecommand(
     accounts_file, account_names, cookie_file, account_name = resolve_cli_accounts(
         account, accounts_file
     )
-    if override_limits:
-        console.print(f"[bold red]⚠ {OVERRIDE_RISK_WARNING}[/]")
     run_async(
         generate(
             count,

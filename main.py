@@ -790,6 +790,7 @@ class RichHideMyEmail(HideMyEmail):
         max_per_hour: Optional[int] = None,
         override_limits: bool = False,
         status_sink: Optional[Callable[[str], None]] = None,
+        warn_override: bool = True,
     ) -> list[str]:
         try:
             if not self._ensure_cookie_configured():
@@ -809,7 +810,9 @@ class RichHideMyEmail(HideMyEmail):
             )
             for warning in clamp_warnings:
                 self._log(f"[bold yellow][WARN][/] {warning}")
-            if override_limits:
+            # In a multi-account run the caller logs this warning once for the
+            # whole run (warn_override=False) instead of once per account.
+            if override_limits and warn_override:
                 self._log(f"[bold red][WARN][/] {OVERRIDE_RISK_WARNING}")
 
             generated_today = 0 if override_limits else count_generated_today(self.account_name)
@@ -989,6 +992,7 @@ async def generate_account(
             max_per_hour=max_per_hour,
             override_limits=override_limits,
             status_sink=status_sink,
+            warn_override=False,
         )
         return account, emails
 
@@ -1036,6 +1040,8 @@ async def generate_with_accounts_file(
         return
 
     console.rule()
+    if override_limits:
+        console.log(f"[bold red][WARN][/] {OVERRIDE_RISK_WARNING}")
     if len(accounts) != total_accounts:
         selected = ", ".join(account.name for account in accounts)
         console.log(

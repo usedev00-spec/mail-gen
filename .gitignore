@@ -17,11 +17,23 @@ accounts.json
 cookies/*
 !cookies/*.example.txt
 
+# No Markdown file is ever shipped to clients, except the public README
+# (the client-facing manual). Private guides/notes stay local, no exception.
+*.md
+!README.md
+
 # Access-key system — NEVER push these (maintainer only)
 license_private_key.pem
 keygen.py
 issued_keys.json
 GUIDE-CLES-PRIVE.md
+# Belt and braces: any key material or local env file, whatever the name
+# (also covers backup copies like license_private_key.pem.bak).
+*.pem
+*.pem.*
+*.key
+.env
+.env.*
 
 # Generated CSV exports
 *.csv
