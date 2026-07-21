@@ -183,3 +183,25 @@ class HideMyEmail:
             f"{self.base_url_v2}/list",
             params=self.params,
         )
+
+    async def deactivate_email(self, anonymous_id: str) -> dict:
+        """Deactivate a Hide My Email alias (stops forwarding).
+
+        ``anonymous_id`` is the ``anonymousId`` field returned for the alias by
+        ``list_email()``. Reversible via ``reactivate_email()``.
+        """
+        return await self._request_json(
+            "POST",
+            f"{self.base_url_v1}/deactivate",
+            params=self.params,
+            json={"anonymousId": anonymous_id},
+        )
+
+    async def reactivate_email(self, anonymous_id: str) -> dict:
+        """Re-activate a previously deactivated Hide My Email alias."""
+        return await self._request_json(
+            "POST",
+            f"{self.base_url_v1}/reactivate",
+            params=self.params,
+            json={"anonymousId": anonymous_id},
+        )

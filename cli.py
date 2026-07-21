@@ -2,6 +2,7 @@
 
 import asyncio
 import math
+import os
 import re
 
 import click
@@ -30,6 +31,7 @@ from main import (
     resolve_effective_limits,
     suggested_duration_hours,
 )
+from banscan import run_ban_check
 import licensing
 
 console = Console()
@@ -210,6 +212,7 @@ def resolve_cli_accounts(account_options, accounts_file):
 MENU_ITEMS = [
     ("1", "Generate", "Create new HideMyEmail aliases"),
     ("2", "List", "Browse & export existing aliases"),
+    ("3", "Ban check", "Détecter les alias bannis Amazon & les désactiver"),
     ("0", "Quit", "Exit the program"),
 ]
 
@@ -402,6 +405,50 @@ def interactive_list() -> None:
     )
 
 
+def interactive_ban_check() -> None:
+    console.rule(f"[bold {ACCENT}]Détection des bans Amazon")
+    console.print(
+        "[dim]Cherche les mails Amazon « baa-customer-appeal » dans ta boîte Gmail, "
+        "identifie les alias bannis et le compte iCloud de chacun, puis propose de "
+        "les désactiver (après vérification que les cookies le permettent).[/]\n"
+    )
+
+    dry_run = Confirm.ask(
+        "Mode simulation (dry-run — scan & rapport, aucune désactivation) ?",
+        default=True,
+        console=console,
+    )
+
+    accounts_file, account_names, cookie_file, account_name = pick_accounts()
+
+    summary_panel(
+        "Review",
+        [
+            ("Mode", "simulation (dry-run)" if dry_run else "désactivation (avec confirmation)"),
+            ("Accounts file", accounts_file or "—"),
+            (
+                "Account(s)",
+                account_name
+                or (
+                    (", ".join(account_names) if account_names else "all")
+                    if accounts_file
+                    else "default"
+                ),
+            ),
+        ],
+    )
+
+    run_async(
+        run_ban_check(
+            accounts_file=accounts_file,
+            account_names=account_names,
+            cookie_file=cookie_file,
+            account_name=account_name,
+            dry_run=dry_run,
+        )
+    )
+
+
 def run_interactive_menu() -> None:
     console.clear()
     licensing.require_license(console)
@@ -418,6 +465,8 @@ def run_interactive_menu() -> None:
                 interactive_generate()
             elif choice == "2":
                 interactive_list()
+            elif choice == "3":
+                interactive_ban_check()
         except KeyboardInterrupt:
             console.print("\n[yellow]Cancelled — returning to menu.[/]")
 
@@ -600,9 +649,58 @@ def activatecommand(key):
     )
 
 
+@click.command(name="bancheck")
+@click.option(
+    "--accounts-file",
+    default=None,
+    help="Path to a JSON file that defines multiple iCloud accounts.",
+)
+@click.option(
+    "--account",
+    multiple=True,
+    help=(
+        "Restrict to the named account(s) from the accounts file. Repeat the "
+        "flag or pass a comma-separated list. Without it, all accounts are used."
+    ),
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Scan & report only — never deactivate any alias.",
+)
+@click.option(
+    "--yes",
+    "assume_yes",
+    is_flag=True,
+    default=False,
+    help="Deactivate banned aliases without the per-account confirmation prompt.",
+)
+def bancheckcommand(accounts_file, account, dry_run, assume_yes):
+    "Detect Amazon-ban aliases (baa-customer-appeal) and deactivate them"
+    licensing.require_license(console)
+    # Default to all accounts (accounts.json) so bans map across every phone.
+    if not accounts_file and not account and os.path.exists("accounts.json"):
+        accounts_file = "accounts.json"
+    accounts_file, account_names, cookie_file, account_name = resolve_cli_accounts(
+        account, accounts_file
+    )
+    run_async(
+        run_ban_check(
+            accounts_file=accounts_file,
+            account_names=account_names,
+            cookie_file=cookie_file,
+            account_name=account_name,
+            dry_run=dry_run,
+            assume_yes=assume_yes,
+        )
+    )
+
+
 cli.add_command(generatecommand)
 cli.add_command(listcommand)
 cli.add_command(activatecommand)
+cli.add_command(bancheckcommand)
 
 
 if __name__ == "__main__":

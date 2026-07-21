@@ -11,6 +11,10 @@ generation_log.jsonl
 # Only accounts.example.json is tracked.
 accounts.json
 
+# Gmail IMAP config for the ban check — holds a Gmail app password.
+# Only banscan.example.json is tracked.
+banscan.json
+
 # Real per-account cookie files live in cookies/ and are never pushed.
 # Only the *.example.txt templates in that folder are tracked (git pull
 # brings you the templates; your real files sit alongside, untouched).

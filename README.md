@@ -20,6 +20,7 @@
 - [Lister / exporter tes alias](#-lister--exporter-tes-alias)
 - [Mode ligne de commande](#-mode-ligne-de-commande-rapide)
 - [Plusieurs comptes iCloud](#-plusieurs-comptes-icloud)
+- [Détecter & désactiver les alias bannis Amazon](#-détecter--désactiver-les-alias-bannis-amazon)
 - [Mettre à jour](#-mettre-à-jour-le-projet)
 - [FAQ](#-faq)
 
@@ -363,6 +364,78 @@ Pendant la génération multi-comptes, un **tableau de bord en direct** affiche 
 (main)       Alias 2/10 (8 remaining) — next at 01:12:04 in 12m 3s
 (secondary)  Alias 1/5 (5 remaining) — next at 01:05:30 in 5m 29s
 ```
+
+---
+
+## 🚫 Détecter & désactiver les alias bannis Amazon
+
+Quand Amazon ferme un compte lié à un de tes alias, il envoie un mail d'objet
+**`baa-customer-appeal`**. L'alias, lui, reste actif et continue de rediriger. Cette
+fonction repère ces alias « bannis » et te propose de les désactiver.
+
+**Comment ça marche :**
+
+1. Le script se connecte en **IMAP à ta boîte Gmail** (celle vers laquelle tes alias
+   redirigent) et cherche les mails d'Amazon dont l'objet contient
+   `baa-customer-appeal`. La boîte est ouverte **en lecture seule** (`BODY.PEEK`) : rien
+   n'est marqué lu ni modifié.
+2. Il t'affiche la **liste des alias** qui ont reçu ce mail.
+3. Il croise cette liste avec les alias de **chaque compte iCloud** et t'annonce, compte
+   par compte, quels alias sont bannis (« compte iCloud X → tels alias »).
+4. Avant toute désactivation, il **vérifie que tes cookies permettent bien de
+   désactiver** (sonde non destructive — il ne touche à aucun alias réel).
+5. Il te **demande confirmation** par compte, puis désactive les alias bannis encore
+   actifs (les déjà inactifs sont ignorés). La désactivation est réversible côté iCloud.
+
+**Configuration (une seule fois) — le mot de passe d'application Gmail :**
+
+```bash
+# copie le modèle puis remplis tes infos (ce fichier n'est jamais poussé sur git)
+cp banscan.example.json banscan.json
+```
+
+```json
+{
+  "address": "toncompte@gmail.com",
+  "app_password": "abcd efgh ijkl mnop",
+  "imap_host": "imap.gmail.com",
+  "imap_port": 993,
+  "from_query": "amazon",
+  "subject_query": "baa-customer-appeal"
+}
+```
+
+> 🔑 **`app_password`** n'est **pas** ton mot de passe Gmail habituel : c'est un
+> **mot de passe d'application** (Compte Google → Sécurité → Validation en 2 étapes →
+> Mots de passe des applications). L'accès IMAP doit aussi être activé dans les
+> paramètres Gmail. Tu peux aussi passer par les variables d'environnement
+> `GMAIL_ADDRESS` / `GMAIL_APP_PASSWORD`, ou laisser le script te les demander au premier
+> lancement (le mot de passe n'est jamais affiché).
+
+**Utilisation :**
+
+Dans le **menu interactif**, choisis **`3`** (Ban check). Par défaut il démarre en
+**mode simulation** (dry-run) : il scanne et fait le rapport sans rien désactiver.
+
+En ligne de commande :
+
+```bash
+# scan + rapport uniquement (aucune désactivation), sur tous les comptes du accounts.json
+python3 cli.py bancheck --dry-run
+
+# scan puis désactivation, avec une confirmation par compte
+python3 cli.py bancheck
+
+# limiter à certains comptes
+python3 cli.py bancheck --account "iCloud2,iCloud3"
+
+# désactiver sans confirmation par compte (à utiliser en connaissance de cause)
+python3 cli.py bancheck --yes
+```
+
+> ⚠️ Si un compte affiche « Impossible de désactiver avec ces cookies », c'est que sa
+> session iCloud est périmée : réexporte des cookies frais (voir
+> [Récupérer ton cookie iCloud](#-récupérer-ton-cookie-icloud)) puis relance.
 
 ---
 
