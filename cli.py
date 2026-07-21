@@ -414,17 +414,34 @@ def interactive_ban_check() -> None:
     )
 
     dry_run = Confirm.ask(
-        "Mode simulation (dry-run — scan & rapport, aucune désactivation) ?",
+        "Mode simulation (dry-run — scan & rapport, aucune action) ?",
         default=True,
         console=console,
     )
 
+    action = "deactivate"
+    if Confirm.ask(
+        "Supprimer définitivement les alias en plus de les désactiver ? "
+        "(irréversible)",
+        default=False,
+        console=console,
+    ):
+        action = "delete"
+
     accounts_file, account_names, cookie_file, account_name = pick_accounts()
+
+    if dry_run:
+        mode = "simulation (dry-run)"
+    elif action == "delete":
+        mode = "désactivation + suppression (irréversible, avec confirmation)"
+    else:
+        mode = "désactivation (avec confirmation)"
 
     summary_panel(
         "Review",
         [
-            ("Mode", "simulation (dry-run)" if dry_run else "désactivation (avec confirmation)"),
+            ("Mode", mode),
+            ("Action", "désactiver + supprimer" if action == "delete" else "désactiver"),
             ("Accounts file", accounts_file or "—"),
             (
                 "Account(s)",
@@ -445,6 +462,7 @@ def interactive_ban_check() -> None:
             cookie_file=cookie_file,
             account_name=account_name,
             dry_run=dry_run,
+            action=action,
         )
     )
 
@@ -667,17 +685,27 @@ def activatecommand(key):
     "--dry-run",
     is_flag=True,
     default=False,
-    help="Scan & report only — never deactivate any alias.",
+    help="Scan & report only — never deactivate or delete any alias.",
+)
+@click.option(
+    "--delete",
+    "delete_mode",
+    is_flag=True,
+    default=False,
+    help=(
+        "Also permanently DELETE each banned alias (deactivate then delete). "
+        "Irreversible. Without it, aliases are only deactivated."
+    ),
 )
 @click.option(
     "--yes",
     "assume_yes",
     is_flag=True,
     default=False,
-    help="Deactivate banned aliases without the per-account confirmation prompt.",
+    help="Act on banned aliases without the per-account confirmation prompt.",
 )
-def bancheckcommand(accounts_file, account, dry_run, assume_yes):
-    "Detect Amazon-ban aliases (baa-customer-appeal) and deactivate them"
+def bancheckcommand(accounts_file, account, dry_run, delete_mode, assume_yes):
+    "Detect Amazon-ban aliases (baa-customer-appeal) and deactivate/delete them"
     licensing.require_license(console)
     # Default to all accounts (accounts.json) so bans map across every phone.
     if not accounts_file and not account and os.path.exists("accounts.json"):
@@ -693,6 +721,7 @@ def bancheckcommand(accounts_file, account, dry_run, assume_yes):
             account_name=account_name,
             dry_run=dry_run,
             assume_yes=assume_yes,
+            action="delete" if delete_mode else "deactivate",
         )
     )
 

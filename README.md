@@ -389,8 +389,13 @@ de les désactiver.
    par compte, quels alias sont bannis (« compte iCloud X → tels alias »).
 4. Avant toute désactivation, il **vérifie que tes cookies permettent bien de
    désactiver** (sonde non destructive — il ne touche à aucun alias réel).
-5. Il te **demande confirmation** par compte, puis désactive les alias bannis encore
-   actifs (les déjà inactifs sont ignorés). La désactivation est réversible côté iCloud.
+5. Il te **demande confirmation** par compte, puis :
+   - **désactivation** (par défaut) : désactive les alias bannis encore actifs. C'est
+     **réversible** côté iCloud (réactivable).
+   - **désactivation + suppression** (option, drapeau `--delete` ou prompt du menu) :
+     désactive puis **supprime définitivement** l'alias. iCloud n'autorise la suppression
+     que d'un alias désactivé, donc l'ordre désactiver → supprimer est fait
+     automatiquement. ⚠️ **Irréversible.** L'authentification reste la même (tes cookies).
 
 **Configuration (une seule fois) — le mot de passe d'application Gmail :**
 
@@ -426,26 +431,31 @@ cp banscan.example.json banscan.json
 **Utilisation :**
 
 Dans le **menu interactif**, choisis **`3`** (Ban check). Par défaut il démarre en
-**mode simulation** (dry-run) : il scanne et fait le rapport sans rien désactiver.
+**mode simulation** (dry-run) et te demande si tu veux aussi supprimer (en plus de
+désactiver).
 
 En ligne de commande :
 
 ```bash
-# scan + rapport uniquement (aucune désactivation), sur tous les comptes du accounts.json
+# scan + rapport uniquement (aucune action), sur tous les comptes du accounts.json
 python3 cli.py bancheck --dry-run
 
-# scan puis désactivation, avec une confirmation par compte
+# scan puis DÉSACTIVATION (réversible), avec une confirmation par compte
 python3 cli.py bancheck
+
+# scan puis DÉSACTIVATION + SUPPRESSION définitive (irréversible), confirmation par compte
+python3 cli.py bancheck --delete
 
 # limiter à certains comptes
 python3 cli.py bancheck --account "iCloud2,iCloud3"
 
-# désactiver sans confirmation par compte (à utiliser en connaissance de cause)
+# agir sans confirmation par compte (à utiliser en connaissance de cause)
 python3 cli.py bancheck --yes
+python3 cli.py bancheck --delete --yes
 ```
 
-> ⚠️ Si un compte affiche « Impossible de désactiver avec ces cookies », c'est que sa
-> session iCloud est périmée : réexporte des cookies frais (voir
+> ⚠️ Si un compte affiche « Impossible d'agir avec ces cookies », c'est que sa session
+> iCloud est périmée : réexporte des cookies frais (voir
 > [Récupérer ton cookie iCloud](#-récupérer-ton-cookie-icloud)) puis relance.
 
 ---

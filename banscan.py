@@ -406,14 +406,31 @@ async def probe_account_deactivation(
     return ("ok" if ok else "unauthorized"), "aller-retour"
 
 
-async def _deactivate_records(
+def _result_message(hme, response) -> str:
+    return (
+        hme._format_error_message(response)
+        if isinstance(response, dict)
+        else "réponse invalide"
+    )
+
+
+async def _process_records(
     hme: RichHideMyEmail,
     records: list[dict],
     console: Console,
     account_name: str,
+    action: str = "deactivate",
 ) -> tuple[list[str], list[tuple[str, str]]]:
-    deactivated: list[str] = []
+    """Deactivate (or deactivate + delete) each banned alias.
+
+    ``action`` is ``"deactivate"`` or ``"delete"``. Deletion requires the alias to
+    be inactive first, so an active alias is deactivated before being deleted;
+    an already-inactive alias is deleted directly.
+    """
+    done: list[str] = []
     failed: list[tuple[str, str]] = []
+    verb = "désactivé + supprimé" if action == "delete" else "désactivé"
+
     for index, record in enumerate(records):
         alias = str(record.get("hme", "?"))
         anonymous_id = record.get("anonymousId")
@@ -422,24 +439,38 @@ async def _deactivate_records(
             console.log(f"({account_name}) [red]✗ {alias} — anonymousId manquant[/]")
             continue
 
-        response = await hme.deactivate_email(anonymous_id)
-        if isinstance(response, dict) and response.get("success"):
-            deactivated.append(alias)
-            console.log(f"({account_name}) [green]✓ désactivé[/] : {alias}")
-        else:
-            message = (
-                hme._format_error_message(response)
-                if isinstance(response, dict)
-                else "réponse invalide"
-            )
-            failed.append((alias, message))
-            console.log(f"({account_name}) [red]✗ échec[/] {alias} : {message}")
+        # Deactivate first if still active (also required before any deletion).
+        if record.get("isActive"):
+            response = await hme.deactivate_email(anonymous_id)
+            if not (isinstance(response, dict) and response.get("success")):
+                message = _result_message(hme, response)
+                failed.append((alias, f"désactivation : {message}"))
+                console.log(
+                    f"({account_name}) [red]✗ échec désactivation[/] {alias} : {message}"
+                )
+                continue
+            if action == "delete":
+                await asyncio.sleep(random.uniform(0.5, 1.5))
+
+        if action == "delete":
+            response = await hme.delete_email(anonymous_id)
+            if not (isinstance(response, dict) and response.get("success")):
+                message = _result_message(hme, response)
+                failed.append((alias, f"suppression : {message}"))
+                console.log(
+                    f"({account_name}) [red]✗ échec suppression[/] {alias} : {message} "
+                    "(l'alias reste désactivé)"
+                )
+                continue
+
+        done.append(alias)
+        console.log(f"({account_name}) [green]✓ {verb}[/] : {alias}")
 
         # Gentle, human-ish pacing between actions on the same account.
         if index < len(records) - 1:
             await asyncio.sleep(random.uniform(1.0, 3.0))
 
-    return deactivated, failed
+    return done, failed
 
 
 def _resolve_accounts(
@@ -474,10 +505,12 @@ async def run_ban_check(
     account_name: str | None = None,
     dry_run: bool = False,
     assume_yes: bool = False,
+    action: str = "deactivate",
     gmail_config_path: str = DEFAULT_GMAIL_CONFIG,
     console: Console | None = None,
 ) -> None:
     console = console or Console()
+    delete_mode = action == "delete"
 
     # 1) Scan Gmail for Amazon ban emails and extract recipient aliases.
     try:
@@ -580,9 +613,14 @@ async def run_ban_check(
     if not banned_by_account:
         return
 
-    # 4) Per account: probe deactivation capability, then (confirm →) deactivate.
-    console.rule("[bold green]Vérification & désactivation")
-    total_deactivated = total_failed = total_skipped = 0
+    # 4) Per account: probe deactivation capability, then (confirm →) act.
+    action_word = "désactiver/supprimer" if delete_mode else "désactiver"
+    done_label = "Désactivés + supprimés" if delete_mode else "Désactivés"
+    console.rule(
+        "[bold green]Vérification & "
+        + ("désactivation + suppression" if delete_mode else "désactivation")
+    )
+    total_done = total_failed = total_skipped = 0
 
     for name, banned in banned_by_account.items():
         account = accounts_by_name[name]
@@ -600,9 +638,9 @@ async def run_ban_check(
             )
             if verdict == "unauthorized":
                 console.log(
-                    f"({name}) [bold red]✗ Impossible de désactiver avec ces "
-                    "cookies[/] (session iCloud périmée). Réexporte des cookies "
-                    "frais depuis icloud.com/settings puis relance."
+                    f"({name}) [bold red]✗ Impossible d'agir avec ces cookies[/] "
+                    "(session iCloud périmée). Réexporte des cookies frais depuis "
+                    "icloud.com/settings puis relance."
                 )
                 total_skipped += len(banned)
                 continue
@@ -613,46 +651,61 @@ async def run_ban_check(
                 )
             else:
                 console.log(
-                    f"({name}) [green]✓ Cookies OK pour désactiver[/] "
+                    f"({name}) [green]✓ Cookies OK pour {action_word}[/] "
                     f"(test : {method})."
                 )
 
-            active = [record for record in banned if record.get("isActive")]
-            already_inactive = len(banned) - len(active)
-            if already_inactive:
-                console.log(
-                    f"({name}) {already_inactive} alias banni(s) déjà inactif(s) — "
-                    "ignoré(s)."
-                )
-                total_skipped += already_inactive
-            if not active:
-                console.log(f"({name}) Aucun alias banni actif à désactiver.")
+            # In delete mode every banned alias is processed (inactive ones are
+            # deleted directly); otherwise only the still-active ones need it.
+            if delete_mode:
+                to_process = list(banned)
+            else:
+                to_process = [r for r in banned if r.get("isActive")]
+                already_inactive = len(banned) - len(to_process)
+                if already_inactive:
+                    console.log(
+                        f"({name}) {already_inactive} alias banni(s) déjà "
+                        "inactif(s) — ignoré(s)."
+                    )
+                    total_skipped += already_inactive
+            if not to_process:
+                console.log(f"({name}) Aucun alias banni à traiter.")
                 continue
 
             if dry_run:
+                verb = "désactivés + supprimés" if delete_mode else "désactivés"
                 console.log(
-                    f"({name}) [cyan]Dry-run[/] : {len(active)} alias seraient "
-                    "désactivés (aucune action réelle)."
+                    f"({name}) [cyan]Dry-run[/] : {len(to_process)} alias seraient "
+                    f"{verb} (aucune action réelle)."
                 )
                 continue
 
+            if delete_mode:
+                question = (
+                    f"Désactiver ET SUPPRIMER définitivement (irréversible) les "
+                    f"{len(to_process)} alias banni(s) du compte « {name} » ?"
+                )
+            else:
+                question = (
+                    f"Désactiver les {len(to_process)} alias banni(s) actif(s) du "
+                    f"compte « {name} » ?"
+                )
             proceed = assume_yes or Confirm.ask(
-                f"Désactiver les {len(active)} alias banni(s) actif(s) du compte "
-                f"« {name} » ?",
-                default=False,
-                console=console,
+                question, default=False, console=console
             )
             if not proceed:
                 console.log(f"({name}) Ignoré (pas de confirmation).")
-                total_skipped += len(active)
+                total_skipped += len(to_process)
                 continue
 
-            deactivated, failed = await _deactivate_records(hme, active, console, name)
-            total_deactivated += len(deactivated)
+            done, failed = await _process_records(
+                hme, to_process, console, name, action
+            )
+            total_done += len(done)
             total_failed += len(failed)
 
     console.rule("[bold green]Résumé")
     console.log(
-        f"[bold]Désactivés : {total_deactivated}  |  "
+        f"[bold]{done_label} : {total_done}  |  "
         f"Ignorés : {total_skipped}  |  Échecs : {total_failed}[/]"
     )

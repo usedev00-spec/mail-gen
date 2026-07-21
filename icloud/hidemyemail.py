@@ -205,3 +205,17 @@ class HideMyEmail:
             params=self.params,
             json={"anonymousId": anonymous_id},
         )
+
+    async def delete_email(self, anonymous_id: str) -> dict:
+        """Permanently delete a Hide My Email alias.
+
+        Apple only allows deleting an alias that is already deactivated, so
+        callers must deactivate it first. Unlike deactivation this is
+        irreversible. Uses the same cookie session as every other call.
+        """
+        return await self._request_json(
+            "POST",
+            f"{self.base_url_v1}/delete",
+            params=self.params,
+            json={"anonymousId": anonymous_id},
+        )

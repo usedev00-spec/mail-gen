@@ -1,15 +1,41 @@
+import asyncio
 import os
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from banscan import (
     _build_search_criteria,
+    _process_records,
     classify_deactivate_probe,
     extract_recipient_addresses,
     map_banned_to_accounts,
 )
+
+
+class _DummyConsole:
+    def log(self, *args, **kwargs):
+        pass
+
+
+class _FakeHME:
+    def __init__(self, deactivate_ok=True, delete_ok=True):
+        self.calls = []
+        self._deactivate_ok = deactivate_ok
+        self._delete_ok = delete_ok
+
+    async def deactivate_email(self, anonymous_id):
+        self.calls.append(("deactivate", anonymous_id))
+        return {"success": self._deactivate_ok, "error": {"errorMessage": "no"}}
+
+    async def delete_email(self, anonymous_id):
+        self.calls.append(("delete", anonymous_id))
+        return {"success": self._delete_ok, "error": {"errorMessage": "no"}}
+
+    def _format_error_message(self, response):
+        return "err"
 
 
 class ExtractRecipientAddressesTest(unittest.TestCase):
@@ -149,6 +175,45 @@ class ClassifyDeactivateProbeTest(unittest.TestCase):
             "ok",
         )
         self.assertEqual(classify_deactivate_probe({"success": True}), "ok")
+
+
+@mock.patch("banscan.random.uniform", return_value=0)
+class ProcessRecordsTest(unittest.TestCase):
+    def _run(self, hme, records, action):
+        return asyncio.run(
+            _process_records(hme, records, _DummyConsole(), "acc", action)
+        )
+
+    def test_deactivate_only_calls_deactivate(self, _uniform):
+        hme = _FakeHME()
+        rec = {"hme": "a@icloud.com", "anonymousId": "id-a", "isActive": True}
+        done, failed = self._run(hme, [rec], "deactivate")
+        self.assertEqual(done, ["a@icloud.com"])
+        self.assertEqual(failed, [])
+        self.assertEqual(hme.calls, [("deactivate", "id-a")])
+
+    def test_delete_active_deactivates_then_deletes(self, _uniform):
+        hme = _FakeHME()
+        rec = {"hme": "a@icloud.com", "anonymousId": "id-a", "isActive": True}
+        done, failed = self._run(hme, [rec], "delete")
+        self.assertEqual(done, ["a@icloud.com"])
+        self.assertEqual(hme.calls, [("deactivate", "id-a"), ("delete", "id-a")])
+
+    def test_delete_inactive_deletes_directly(self, _uniform):
+        hme = _FakeHME()
+        rec = {"hme": "b@icloud.com", "anonymousId": "id-b", "isActive": False}
+        done, failed = self._run(hme, [rec], "delete")
+        self.assertEqual(done, ["b@icloud.com"])
+        self.assertEqual(hme.calls, [("delete", "id-b")])
+
+    def test_delete_skips_delete_when_deactivate_fails(self, _uniform):
+        hme = _FakeHME(deactivate_ok=False)
+        rec = {"hme": "a@icloud.com", "anonymousId": "id-a", "isActive": True}
+        done, failed = self._run(hme, [rec], "delete")
+        self.assertEqual(done, [])
+        self.assertEqual(len(failed), 1)
+        # Deletion must NOT be attempted if deactivation failed.
+        self.assertEqual(hme.calls, [("deactivate", "id-a")])
 
 
 if __name__ == "__main__":
