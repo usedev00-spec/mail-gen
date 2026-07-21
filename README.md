@@ -23,6 +23,7 @@
 - [Détecter, désactiver & supprimer les alias bannis Amazon](#-détecter-désactiver--supprimer-les-alias-bannis-amazon)
 - [Mettre à jour](#-mettre-à-jour-le-projet)
 - [FAQ](#-faq)
+- [Annexe : tout installer de zéro (macOS & Windows)](#-annexe--tout-installer-de-zéro-macos--windows)
 
 ---
 
@@ -509,6 +510,160 @@ Il est **informatif** (et alimente le compte à rebours en direct) : il te dit c
 
 **J'ai plus d'adresses dans Réglages > iCloud sur mon iPhone que dans l'export de l'outil**
 C'est normal, et ce n'est pas un bug de fetch : chaque `list`/export affiche désormais le total exact renvoyé par Apple (`Apple returned N alias(es) total...`), et ce total est complet — vérifié, aucune pagination côté serveur. L'écart vient d'ailleurs : l'écran iPhone **Réglages > [ton nom] > iCloud > Masquer mon adresse e-mail** regroupe aussi les adresses créées automatiquement via **« Se connecter avec Apple »** (une par appli où tu l'as utilisé). Ce sont des alias qui viennent d'un système Apple différent (`appleid.apple.com`, pas `icloud.com`) et que cet outil ne gère pas — reconnaissables sur iPhone à leur libellé du style *« Utilisé avec [nom de l'appli] »*.
+
+---
+
+## 🧰 Annexe : tout installer de zéro (macOS & Windows)
+
+> Cette annexe est pour toi si tu n'as **jamais lancé de script** sur ta machine.
+> On part de zéro : ouvrir un terminal, installer Python, récupérer le projet,
+> installer les dépendances, lancer l'outil. Compte **10–15 minutes**.
+
+### 💡 C'est quoi tout ça, d'abord ?
+
+| Mot | En clair |
+|---|---|
+| **Terminal** | Une fenêtre où tu tapes des commandes au clavier au lieu de cliquer. C'est là-dedans que tu lanceras l'outil. |
+| **Python** | Le langage dans lequel le script est écrit. Il faut l'installer une fois pour que ta machine sache l'exécuter. |
+| **pip** | Le « magasin d'applications » de Python : il télécharge les briques dont le script a besoin. Il est installé automatiquement avec Python. |
+| **Dépendances** | Les briques en question (`aiohttp`, `rich`, `click`, `certifi`, `cryptography`). Tu n'as **pas** à les connaître : une seule commande les installe toutes. |
+| **git** | L'outil qui télécharge le projet et permet de le mettre à jour plus tard. (Facultatif : tu peux aussi télécharger un ZIP.) |
+
+Dans tout ce qui suit : tape (ou colle) la commande dans le terminal, puis appuie sur **Entrée**. Une commande qui ne renvoie rien, c'est souvent bon signe.
+
+---
+
+### 🍎 Sur macOS
+
+**1. Ouvrir le Terminal**
+
+Appuie sur `⌘ + Espace` (Spotlight), tape `Terminal`, puis **Entrée**. Une fenêtre blanche ou noire s'ouvre avec un curseur qui clignote : c'est là que tout se passe.
+
+**2. Installer Python**
+
+macOS n'inclut pas de Python assez récent. Installe-le depuis le site officiel :
+
+1. Va sur **[python.org/downloads](https://www.python.org/downloads/)** et clique le gros bouton jaune **Download Python 3.x** (il faut **3.12 ou plus**).
+2. Ouvre le fichier `.pkg` téléchargé et laisse-toi guider (Continuer → Continuer → Installer).
+3. À la fin, l'installeur ouvre un dossier avec un fichier **`Install Certificates.command`** : **double-clique dessus** (il installe les certificats HTTPS — sans ça, la connexion à iCloud peut échouer avec une erreur SSL).
+
+Vérifie ensuite dans le Terminal :
+
+```bash
+python3 --version
+```
+
+Tu dois voir quelque chose comme `Python 3.13.x`. ✅ (pip est inclus, rien de plus à installer.)
+
+**3. Installer git (pour télécharger le projet)**
+
+```bash
+git --version
+```
+
+- Si un numéro de version s'affiche : git est déjà là, passe à l'étape suivante.
+- Sinon, macOS te propose tout seul d'installer les **outils en ligne de commande** : clique **Installer** dans la fenêtre qui apparaît, attends la fin, puis relance `git --version`.
+
+**4. Télécharger le projet et installer les dépendances**
+
+```bash
+cd ~/Desktop
+git clone https://github.com/usedev00-spec/mail-gen
+cd mail-gen
+python3 -m pip install -r requirements.txt
+```
+
+Ces 4 commandes : se placer sur le Bureau → télécharger le projet dans un dossier `mail-gen` → entrer dans ce dossier → installer d'un coup toutes les dépendances (des lignes défilent, c'est normal ; ça se termine par `Successfully installed …`).
+
+**5. Lancer l'outil**
+
+```bash
+python3 cli.py
+```
+
+Le menu interactif s'affiche 🎉. Reprends ensuite le guide au chapitre [Activer ta clé d'accès](#-activer-ta-clé-daccès).
+
+> 💡 **Pour les prochaines fois** : rouvre le Terminal, tape `cd ~/Desktop/mail-gen` puis `python3 cli.py`. C'est tout.
+
+---
+
+### 🪟 Sur Windows
+
+**1. Installer Python**
+
+1. Va sur **[python.org/downloads](https://www.python.org/downloads/)** et clique **Download Python 3.x** (il faut **3.12 ou plus**).
+2. Lance le fichier `.exe` téléchargé.
+3. ⚠️ **Étape la plus importante de toute la page** : sur le premier écran de l'installeur, **coche la case « Add python.exe to PATH »** en bas, **avant** de cliquer « Install Now ». Si tu l'oublies, Windows ne trouvera pas la commande `python` (c'est l'erreur n°1 des débutants — la solution est plus bas dans le dépannage).
+4. Clique **Install Now** et laisse finir.
+
+**2. Ouvrir un terminal**
+
+Clique sur le menu **Démarrer**, tape `PowerShell`, puis **Entrée**. Une fenêtre bleue ou noire s'ouvre : c'est ton terminal.
+
+Vérifie l'installation :
+
+```powershell
+python --version
+```
+
+Tu dois voir `Python 3.13.x` (ou similaire). ✅ (pip est inclus.)
+
+> Sur Windows la commande s'appelle **`python`** (sans le `3`). Partout où le guide écrit `python3 cli.py ...`, tape `python cli.py ...`.
+
+**3. Télécharger le projet**
+
+Deux options — choisis la plus simple pour toi :
+
+- **Option A, sans rien installer (ZIP)** : sur la page GitHub du projet, clique le bouton vert **Code → Download ZIP**. Ouvre le ZIP téléchargé et **extrais** le dossier sur ton Bureau (clic droit → *Extraire tout…*). Tu obtiens un dossier `mail-gen` (parfois `mail-gen-main` — les commandes ci-dessous marchent pareil, adapte juste le nom).
+- **Option B, avec git (permet `git pull` pour les mises à jour)** : installe **[Git pour Windows](https://git-scm.com/download/win)** (laisse toutes les options par défaut, « Suivant » partout), ferme puis rouvre PowerShell, puis :
+
+  ```powershell
+  cd $HOME\Desktop
+  git clone https://github.com/usedev00-spec/mail-gen
+  ```
+
+**4. Installer les dépendances**
+
+Dans PowerShell :
+
+```powershell
+cd $HOME\Desktop\mail-gen
+python -m pip install -r requirements.txt
+```
+
+Des lignes défilent puis ça se termine par `Successfully installed …` : toutes les briques (`aiohttp`, `rich`, `click`, `certifi`, `cryptography`) sont en place.
+
+**5. Lancer l'outil**
+
+```powershell
+python cli.py
+```
+
+Le menu interactif s'affiche 🎉. Reprends ensuite le guide au chapitre [Activer ta clé d'accès](#-activer-ta-clé-daccès).
+
+> 💡 **Pour les prochaines fois** : rouvre PowerShell, tape `cd $HOME\Desktop\mail-gen` puis `python cli.py`. C'est tout.
+
+---
+
+### 🚑 Dépannage installation (les 6 erreurs classiques)
+
+**« `python` n'est pas reconnu… » (Windows)**
+Tu as oublié de cocher **« Add python.exe to PATH »** à l'installation. Le plus simple : relance l'installeur Python téléchargé, choisis **Modify** → coche l'option PATH (ou désinstalle/réinstalle en cochant la case), puis **ferme et rouvre PowerShell**. En attendant, la commande `py` marche souvent : `py cli.py`.
+
+**Windows ouvre le Microsoft Store quand je tape `python`**
+C'est un faux `python` fourni par Windows. Soit installe Python depuis le Store (ça marche aussi), soit désactive l'alias : Paramètres → Applications → Paramètres avancés des applications → **Alias d'exécution d'applications** → désactive les deux entrées « python », puis rouvre PowerShell.
+
+**« `command not found: python3` » (macOS)**
+Python n'est pas (ou mal) installé : refais l'étape 2 macOS avec l'installeur de python.org, puis **ferme et rouvre le Terminal**.
+
+**« `pip` n'est pas reconnu » / « No module named pip »**
+N'appelle jamais `pip` tout seul : utilise toujours la forme longue, qui marche partout — `python3 -m pip install -r requirements.txt` (macOS) ou `python -m pip install -r requirements.txt` (Windows).
+
+**« No such file or directory: cli.py » / « can't open file 'cli.py' »**
+Tu n'es pas **dans le dossier du projet**. Tape `cd ~/Desktop/mail-gen` (macOS) ou `cd $HOME\Desktop\mail-gen` (Windows) puis relance. Astuce : `ls` (macOS) ou `dir` (Windows) liste les fichiers du dossier où tu te trouves — tu dois y voir `cli.py`.
+
+**Erreur `SSL: CERTIFICATE_VERIFY_FAILED` (macOS)**
+Tu as sauté le double-clic sur **`Install Certificates.command`** (fin de l'étape 2 macOS). Il est dans `Applications → Python 3.x` : double-clique-le et relance l'outil.
 
 ---
 
