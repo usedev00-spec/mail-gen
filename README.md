@@ -405,17 +405,16 @@ cp banscan.example.json banscan.json
   "app_password": "abcd efgh ijkl mnop",
   "imap_host": "imap.gmail.com",
   "imap_port": 993,
-  "from_query": "",
   "text_query": "baa-customer-appeal",
   "subject_query": ""
 }
 ```
 
-> 🔎 La recherche par défaut = texte du message contenant **`baa-customer-appeal`** (rien
-> d'autre). N'ajoute **pas** de filtre `from_query: "amazon"` : Amazon relaie ces mails
-> via iCloud, donc l'expéditeur est `baa-customer-appeal_at_amazon_…@icloud.com` et un
-> filtre « from amazon » exclurait le mail. `from_query` et `subject_query` restent
-> disponibles comme filtres optionnels si tu en as besoin.
+> 🔎 En pratique, seuls `address` et `app_password` te concernent. La recherche cherche le
+> texte **`baa-customer-appeal`** dans tes mails — c'est le marqueur présent dans chaque
+> mail de suspension (Amazon les relaie via iCloud, donc filtrer sur l'expéditeur
+> « amazon » ne marche pas et n'est volontairement pas fait). `subject_query` (vide par
+> défaut) est un filtre optionnel sur l'objet si un jour tu veux affiner.
 
 > 🔑 **`app_password`** n'est **pas** ton mot de passe Gmail habituel : c'est un
 > **mot de passe d'application** (Compte Google → Sécurité → Validation en 2 étapes →

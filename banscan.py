@@ -216,7 +216,6 @@ def load_gmail_config(
 
     config.setdefault("imap_host", "imap.gmail.com")
     config.setdefault("imap_port", 993)
-    config.setdefault("from_query", "")
     config.setdefault("text_query", "baa-customer-appeal")
     config.setdefault("subject_query", "")
     return config
@@ -229,7 +228,6 @@ def _save_gmail_config(path: str, config: dict) -> None:
         "app_password": config.get("app_password", ""),
         "imap_host": config.get("imap_host", "imap.gmail.com"),
         "imap_port": config.get("imap_port", 993),
-        "from_query": config.get("from_query", ""),
         "text_query": config.get("text_query", "baa-customer-appeal"),
         "subject_query": config.get("subject_query", ""),
     }
@@ -273,27 +271,25 @@ def _find_all_mail_mailbox(imap: imaplib.IMAP4) -> str:
 def _build_search_criteria(config: dict) -> list[str]:
     """IMAP SEARCH criteria (implicitly ANDed) built from the config.
 
-    Defaults to emails whose *full text* contains the appeal token
-    ``baa-customer-appeal`` — the language-independent anchor present in every
+    The search is driven **only** by the appeal token ``text_query`` (default
+    ``baa-customer-appeal``) — the language-independent anchor present in every
     ban email (as the sender's display name/address and in the body), regardless
     of the localized subject ("your amazon account is suspended" / "votre compte
     amazon a été suspendu").
 
-    ``from_query`` is intentionally empty by default and NOT applied: Amazon relays
-    these through iCloud Hide My Email, so the sender is
-    ``baa-customer-appeal_at_amazon_ca_..._@icloud.com`` — Gmail does not tokenize
-    "amazon" out of that, so a ``FROM amazon`` filter wrongly excludes the ban
-    email. ``from_query``/``subject_query`` remain available as optional extra
-    filters. All tokens are single words, so quoting is safe and no CHARSET is
+    A ``from`` filter is deliberately NOT supported: Amazon relays these through
+    iCloud Hide My Email, so the sender is
+    ``baa-customer-appeal_at_amazon_ca_..._@icloud.com`` and Gmail does not
+    tokenize "amazon" out of that — a ``FROM amazon`` filter wrongly excludes the
+    ban email entirely. Any ``from_query`` left in the config is ignored on
+    purpose. ``subject_query`` is an optional extra narrowing filter (empty by
+    default). All tokens are single words, so quoting is safe and no CHARSET is
     needed.
     """
-    from_query = config.get("from_query", "")
     text_query = config.get("text_query", "baa-customer-appeal")
     subject_query = config.get("subject_query", "")
 
     criteria: list[str] = []
-    if from_query:
-        criteria += ["FROM", _imap_quote(from_query)]
     if text_query:
         criteria += ["TEXT", _imap_quote(text_query)]
     if subject_query:
@@ -303,10 +299,9 @@ def _build_search_criteria(config: dict) -> list[str]:
 
 def _query_description(config: dict) -> str:
     parts = []
-    if config.get("from_query"):
-        parts.append(f'from:{config["from_query"]}')
-    if config.get("text_query", "baa-customer-appeal"):
-        parts.append(f'text:"{config.get("text_query", "baa-customer-appeal")}"')
+    text_query = config.get("text_query", "baa-customer-appeal")
+    if text_query:
+        parts.append(f'text:"{text_query}"')
     if config.get("subject_query"):
         parts.append(f'subject:"{config["subject_query"]}"')
     return " ".join(parts) or "ALL"

@@ -93,18 +93,23 @@ class BuildSearchCriteriaTest(unittest.TestCase):
             ["TEXT", '"baa-customer-appeal"'],
         )
 
-    def test_from_and_subject_are_optional_extra_filters(self):
-        criteria = _build_search_criteria(
-            {"from_query": "amazon", "subject_query": "suspended"}
-        )
+    def test_stale_from_query_is_ignored(self):
+        # A leftover from_query in the config must NOT be applied — Amazon relays
+        # the ban mail through iCloud, so a FROM amazon filter drops it entirely.
         self.assertEqual(
-            criteria,
-            ["FROM", '"amazon"', "TEXT", '"baa-customer-appeal"', "SUBJECT", '"suspended"'],
+            _build_search_criteria({"from_query": "amazon"}),
+            ["TEXT", '"baa-customer-appeal"'],
+        )
+
+    def test_subject_query_is_an_optional_extra_filter(self):
+        self.assertEqual(
+            _build_search_criteria({"subject_query": "suspended"}),
+            ["TEXT", '"baa-customer-appeal"', "SUBJECT", '"suspended"'],
         )
 
     def test_empty_config_never_yields_empty_criteria(self):
         self.assertEqual(
-            _build_search_criteria({"text_query": "", "from_query": "", "subject_query": ""}),
+            _build_search_criteria({"text_query": "", "subject_query": ""}),
             ["ALL"],
         )
 
