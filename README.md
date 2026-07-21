@@ -20,7 +20,7 @@
 - [Lister / exporter tes alias](#-lister--exporter-tes-alias)
 - [Mode ligne de commande](#-mode-ligne-de-commande-rapide)
 - [Plusieurs comptes iCloud](#-plusieurs-comptes-icloud)
-- [Détecter & désactiver les alias bannis Amazon](#-détecter--désactiver-les-alias-bannis-amazon)
+- [Détecter, désactiver & supprimer les alias bannis Amazon](#-détecter-désactiver--supprimer-les-alias-bannis-amazon)
 - [Mettre à jour](#-mettre-à-jour-le-projet)
 - [FAQ](#-faq)
 
@@ -367,7 +367,7 @@ Pendant la génération multi-comptes, un **tableau de bord en direct** affiche 
 
 ---
 
-## 🚫 Détecter & désactiver les alias bannis Amazon
+## 🚫 Détecter, désactiver & supprimer les alias bannis Amazon
 
 Quand Amazon suspend un compte lié à un de tes alias, il envoie un mail de suspension
 (objet localisé du type « your amazon account is suspended » / « votre compte amazon a
