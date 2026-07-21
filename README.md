@@ -369,16 +369,19 @@ Pendant la génération multi-comptes, un **tableau de bord en direct** affiche 
 
 ## 🚫 Détecter & désactiver les alias bannis Amazon
 
-Quand Amazon ferme un compte lié à un de tes alias, il envoie un mail d'objet
-**`baa-customer-appeal`**. L'alias, lui, reste actif et continue de rediriger. Cette
-fonction repère ces alias « bannis » et te propose de les désactiver.
+Quand Amazon suspend un compte lié à un de tes alias, il envoie un mail de suspension
+(objet localisé du type « your amazon account is suspended » / « votre compte amazon a
+été suspendu ») contenant un lien d'appel **`baa-customer-appeal`**. L'alias, lui, reste
+actif et continue de rediriger. Cette fonction repère ces alias « bannis » et te propose
+de les désactiver.
 
 **Comment ça marche :**
 
 1. Le script se connecte en **IMAP à ta boîte Gmail** (celle vers laquelle tes alias
-   redirigent) et cherche les mails d'Amazon dont l'objet contient
-   `baa-customer-appeal`. La boîte est ouverte **en lecture seule** (`BODY.PEEK`) : rien
-   n'est marqué lu ni modifié.
+   redirigent) et cherche les mails d'Amazon dont le **texte** contient
+   `baa-customer-appeal` — le marqueur du lien d'appel, indépendant de la langue (l'objet,
+   lui, change selon la langue). La boîte est ouverte **en lecture seule** (`BODY.PEEK`) :
+   rien n'est marqué lu ni modifié.
 2. Il t'affiche la **liste des alias** qui ont reçu ce mail.
 3. Il croise cette liste avec les alias de **chaque compte iCloud** et t'annonce, compte
    par compte, quels alias sont bannis (« compte iCloud X → tels alias »).
@@ -401,9 +404,15 @@ cp banscan.example.json banscan.json
   "imap_host": "imap.gmail.com",
   "imap_port": 993,
   "from_query": "amazon",
-  "subject_query": "baa-customer-appeal"
+  "text_query": "baa-customer-appeal",
+  "subject_query": ""
 }
 ```
+
+> 🔎 La recherche par défaut = expéditeur **amazon** + texte contenant
+> **`baa-customer-appeal`**. Si besoin, tu peux affiner : `text_query` cherche dans tout
+> le message, et `subject_query` (vide par défaut) ajoute un filtre sur l'objet — ex.
+> `"subject_query": "suspended"`.
 
 > 🔑 **`app_password`** n'est **pas** ton mot de passe Gmail habituel : c'est un
 > **mot de passe d'application** (Compte Google → Sécurité → Validation en 2 étapes →

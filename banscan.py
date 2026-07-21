@@ -217,7 +217,8 @@ def load_gmail_config(
     config.setdefault("imap_host", "imap.gmail.com")
     config.setdefault("imap_port", 993)
     config.setdefault("from_query", "amazon")
-    config.setdefault("subject_query", "baa-customer-appeal")
+    config.setdefault("text_query", "baa-customer-appeal")
+    config.setdefault("subject_query", "")
     return config
 
 
@@ -229,7 +230,8 @@ def _save_gmail_config(path: str, config: dict) -> None:
         "imap_host": config.get("imap_host", "imap.gmail.com"),
         "imap_port": config.get("imap_port", 993),
         "from_query": config.get("from_query", "amazon"),
-        "subject_query": config.get("subject_query", "baa-customer-appeal"),
+        "text_query": config.get("text_query", "baa-customer-appeal"),
+        "subject_query": config.get("subject_query", ""),
     }
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -268,6 +270,41 @@ def _find_all_mail_mailbox(imap: imaplib.IMAP4) -> str:
     return "INBOX"
 
 
+def _build_search_criteria(config: dict) -> list[str]:
+    """IMAP SEARCH criteria (implicitly ANDed) built from the config.
+
+    Defaults to Amazon emails whose *full text* contains the appeal token
+    ``baa-customer-appeal`` (the language-independent anchor found in the ban
+    email's body), rather than a localized subject like "your amazon account is
+    suspended" / "votre compte amazon a été suspendu". ``subject_query`` is
+    optional and only added if set. All tokens are single words (no spaces), so
+    quoting is safe and no CHARSET is needed.
+    """
+    from_query = config.get("from_query", "amazon")
+    text_query = config.get("text_query", "baa-customer-appeal")
+    subject_query = config.get("subject_query", "")
+
+    criteria: list[str] = []
+    if from_query:
+        criteria += ["FROM", _imap_quote(from_query)]
+    if text_query:
+        criteria += ["TEXT", _imap_quote(text_query)]
+    if subject_query:
+        criteria += ["SUBJECT", _imap_quote(subject_query)]
+    return criteria or ["ALL"]
+
+
+def _query_description(config: dict) -> str:
+    parts = []
+    if config.get("from_query"):
+        parts.append(f'from:{config["from_query"]}')
+    if config.get("text_query", "baa-customer-appeal"):
+        parts.append(f'text:"{config.get("text_query", "baa-customer-appeal")}"')
+    if config.get("subject_query"):
+        parts.append(f'subject:"{config["subject_query"]}"')
+    return " ".join(parts) or "ALL"
+
+
 def scan_ban_recipients(config: dict) -> tuple[int, set[str]]:
     """Search Gmail for Amazon ban emails and return (count, recipient aliases).
 
@@ -278,8 +315,6 @@ def scan_ban_recipients(config: dict) -> tuple[int, set[str]]:
     port = int(config.get("imap_port", 993))
     address = config["address"]
     password = config["app_password"]
-    from_query = config.get("from_query", "amazon")
-    subject_query = config.get("subject_query", "baa-customer-appeal")
 
     imap = imaplib.IMAP4_SSL(host, port)
     try:
@@ -290,9 +325,7 @@ def scan_ban_recipients(config: dict) -> tuple[int, set[str]]:
         if typ != "OK":
             imap.select("INBOX", readonly=True)
 
-        typ, data = imap.search(
-            None, "FROM", _imap_quote(from_query), "SUBJECT", _imap_quote(subject_query)
-        )
+        typ, data = imap.search(None, *_build_search_criteria(config))
         if typ != "OK" or not data or not data[0]:
             return 0, set()
 
@@ -456,6 +489,7 @@ async def run_ban_check(
         f"Connexion IMAP à {gmail_config['imap_host']} "
         f"({gmail_config['address']})…"
     )
+    console.log(f"[dim]Recherche Gmail : {_query_description(gmail_config)}[/]")
     try:
         count, candidates = await asyncio.to_thread(scan_ban_recipients, gmail_config)
     except imaplib.IMAP4.error as exc:
@@ -470,7 +504,7 @@ async def run_ban_check(
 
     candidates.discard(gmail_config["address"].lower())
     console.log(
-        f'{count} mail(s) « {gmail_config["subject_query"]} » d\'Amazon trouvé(s), '
+        f"{count} mail(s) de ban Amazon trouvé(s), "
         f"{len(candidates)} adresse(s) destinataire(s) extraite(s)."
     )
     if candidates:
