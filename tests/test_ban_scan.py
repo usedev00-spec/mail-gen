@@ -5,6 +5,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from banscan import (
+    _build_search_criteria,
     classify_deactivate_probe,
     extract_recipient_addresses,
     map_banned_to_accounts,
@@ -80,6 +81,32 @@ class MapBannedToAccountsTest(unittest.TestCase):
         )
         self.assertEqual(set(banned), {"iPhone1"})
         self.assertEqual(orphans, set())
+
+
+class BuildSearchCriteriaTest(unittest.TestCase):
+    def test_default_searches_full_text_for_token_only(self):
+        # Amazon relays ban mails via iCloud (baa-customer-appeal_at_amazon_..._
+        # @icloud.com), so a FROM amazon filter wrongly excludes them. The token
+        # alone must be the default anchor.
+        self.assertEqual(
+            _build_search_criteria({}),
+            ["TEXT", '"baa-customer-appeal"'],
+        )
+
+    def test_from_and_subject_are_optional_extra_filters(self):
+        criteria = _build_search_criteria(
+            {"from_query": "amazon", "subject_query": "suspended"}
+        )
+        self.assertEqual(
+            criteria,
+            ["FROM", '"amazon"', "TEXT", '"baa-customer-appeal"', "SUBJECT", '"suspended"'],
+        )
+
+    def test_empty_config_never_yields_empty_criteria(self):
+        self.assertEqual(
+            _build_search_criteria({"text_query": "", "from_query": "", "subject_query": ""}),
+            ["ALL"],
+        )
 
 
 class ClassifyDeactivateProbeTest(unittest.TestCase):

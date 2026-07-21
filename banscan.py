@@ -216,7 +216,7 @@ def load_gmail_config(
 
     config.setdefault("imap_host", "imap.gmail.com")
     config.setdefault("imap_port", 993)
-    config.setdefault("from_query", "amazon")
+    config.setdefault("from_query", "")
     config.setdefault("text_query", "baa-customer-appeal")
     config.setdefault("subject_query", "")
     return config
@@ -229,7 +229,7 @@ def _save_gmail_config(path: str, config: dict) -> None:
         "app_password": config.get("app_password", ""),
         "imap_host": config.get("imap_host", "imap.gmail.com"),
         "imap_port": config.get("imap_port", 993),
-        "from_query": config.get("from_query", "amazon"),
+        "from_query": config.get("from_query", ""),
         "text_query": config.get("text_query", "baa-customer-appeal"),
         "subject_query": config.get("subject_query", ""),
     }
@@ -273,14 +273,21 @@ def _find_all_mail_mailbox(imap: imaplib.IMAP4) -> str:
 def _build_search_criteria(config: dict) -> list[str]:
     """IMAP SEARCH criteria (implicitly ANDed) built from the config.
 
-    Defaults to Amazon emails whose *full text* contains the appeal token
-    ``baa-customer-appeal`` (the language-independent anchor found in the ban
-    email's body), rather than a localized subject like "your amazon account is
-    suspended" / "votre compte amazon a été suspendu". ``subject_query`` is
-    optional and only added if set. All tokens are single words (no spaces), so
-    quoting is safe and no CHARSET is needed.
+    Defaults to emails whose *full text* contains the appeal token
+    ``baa-customer-appeal`` — the language-independent anchor present in every
+    ban email (as the sender's display name/address and in the body), regardless
+    of the localized subject ("your amazon account is suspended" / "votre compte
+    amazon a été suspendu").
+
+    ``from_query`` is intentionally empty by default and NOT applied: Amazon relays
+    these through iCloud Hide My Email, so the sender is
+    ``baa-customer-appeal_at_amazon_ca_..._@icloud.com`` — Gmail does not tokenize
+    "amazon" out of that, so a ``FROM amazon`` filter wrongly excludes the ban
+    email. ``from_query``/``subject_query`` remain available as optional extra
+    filters. All tokens are single words, so quoting is safe and no CHARSET is
+    needed.
     """
-    from_query = config.get("from_query", "amazon")
+    from_query = config.get("from_query", "")
     text_query = config.get("text_query", "baa-customer-appeal")
     subject_query = config.get("subject_query", "")
 

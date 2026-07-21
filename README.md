@@ -378,10 +378,12 @@ de les désactiver.
 **Comment ça marche :**
 
 1. Le script se connecte en **IMAP à ta boîte Gmail** (celle vers laquelle tes alias
-   redirigent) et cherche les mails d'Amazon dont le **texte** contient
-   `baa-customer-appeal` — le marqueur du lien d'appel, indépendant de la langue (l'objet,
-   lui, change selon la langue). La boîte est ouverte **en lecture seule** (`BODY.PEEK`) :
-   rien n'est marqué lu ni modifié.
+   redirigent) et cherche les mails dont le **texte** contient `baa-customer-appeal` — le
+   marqueur présent dans chaque mail de suspension (Amazon les envoie via le relais iCloud,
+   avec un expéditeur du type `baa-customer-appeal_at_amazon_ca_…@icloud.com`). C'est une
+   ancre fiable et indépendante de la langue, contrairement à l'objet qui est localisé.
+   La boîte est ouverte **en lecture seule** (`BODY.PEEK`) : rien n'est marqué lu ni
+   modifié.
 2. Il t'affiche la **liste des alias** qui ont reçu ce mail.
 3. Il croise cette liste avec les alias de **chaque compte iCloud** et t'annonce, compte
    par compte, quels alias sont bannis (« compte iCloud X → tels alias »).
@@ -403,16 +405,17 @@ cp banscan.example.json banscan.json
   "app_password": "abcd efgh ijkl mnop",
   "imap_host": "imap.gmail.com",
   "imap_port": 993,
-  "from_query": "amazon",
+  "from_query": "",
   "text_query": "baa-customer-appeal",
   "subject_query": ""
 }
 ```
 
-> 🔎 La recherche par défaut = expéditeur **amazon** + texte contenant
-> **`baa-customer-appeal`**. Si besoin, tu peux affiner : `text_query` cherche dans tout
-> le message, et `subject_query` (vide par défaut) ajoute un filtre sur l'objet — ex.
-> `"subject_query": "suspended"`.
+> 🔎 La recherche par défaut = texte du message contenant **`baa-customer-appeal`** (rien
+> d'autre). N'ajoute **pas** de filtre `from_query: "amazon"` : Amazon relaie ces mails
+> via iCloud, donc l'expéditeur est `baa-customer-appeal_at_amazon_…@icloud.com` et un
+> filtre « from amazon » exclurait le mail. `from_query` et `subject_query` restent
+> disponibles comme filtres optionnels si tu en as besoin.
 
 > 🔑 **`app_password`** n'est **pas** ton mot de passe Gmail habituel : c'est un
 > **mot de passe d'application** (Compte Google → Sécurité → Validation en 2 étapes →
