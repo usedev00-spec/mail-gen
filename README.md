@@ -39,7 +39,7 @@
 
 ## 📦 Installation
 
-> Python **3.12+** requis.
+> Python **3.12+** requis — testé de bout en bout sur **3.13** (dernière version stable vérifiée : suite de tests complète + smoke CLI, aucune API dépréciée).
 
 **1. Cloner le dépôt**
 
@@ -432,13 +432,21 @@ cp banscan.example.json banscan.json
 
 Dans le **menu interactif**, choisis **`3`** (Ban check). Par défaut il démarre en
 **mode simulation** (dry-run) et te demande si tu veux aussi supprimer (en plus de
-désactiver).
+désactiver). En dry-run, il te propose aussi d'**exporter la liste des alias signalés**
+(ceux théoriquement à désactiver/supprimer) vers un fichier **`.txt`** (un alias par
+ligne) ou **`.csv`** (colonnes Compte, Label, Alias, État), au choix.
 
 En ligne de commande :
 
 ```bash
 # scan + rapport uniquement (aucune action), sur tous les comptes du accounts.json
 python3 cli.py bancheck --dry-run
+
+# dry-run + export de la liste des alias signalés (format déduit de l'extension)
+python3 cli.py bancheck --dry-run --export alias_bannis.csv
+python3 cli.py bancheck --dry-run --export alias_bannis.txt
+# forcer le format quel que soit le nom de fichier
+python3 cli.py bancheck --dry-run --export alias_bannis.dat --export-format csv
 
 # scan puis DÉSACTIVATION (réversible), avec une confirmation par compte
 python3 cli.py bancheck
@@ -453,6 +461,11 @@ python3 cli.py bancheck --account "iCloud2,iCloud3"
 python3 cli.py bancheck --yes
 python3 cli.py bancheck --delete --yes
 ```
+
+> 📄 **`--export`** liste les alias qui *seraient* traités : en désactivation, seulement
+> les alias bannis encore actifs ; en mode `--delete`, tous les alias bannis. La liste est
+> établie à partir du croisement Gmail ↔ comptes iCloud, donc elle est complète même si
+> les cookies d'un compte sont périmés.
 
 > ⚠️ Si un compte affiche « Impossible d'agir avec ces cookies », c'est que sa session
 > iCloud est périmée : réexporte des cookies frais (voir

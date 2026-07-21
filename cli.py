@@ -31,7 +31,7 @@ from main import (
     resolve_effective_limits,
     suggested_duration_hours,
 )
-from banscan import run_ban_check
+from banscan import resolve_export_format, run_ban_check
 import licensing
 
 console = Console()
@@ -428,6 +428,27 @@ def interactive_ban_check() -> None:
     ):
         action = "delete"
 
+    # In dry-run, offer to export the flagged aliases (those theoretically to
+    # deactivate/delete) so they can be reviewed or reused.
+    export_path = None
+    export_format = "csv"
+    if dry_run and Confirm.ask(
+        "Exporter la liste des alias signalés (théoriquement à supprimer) ?",
+        default=False,
+        console=console,
+    ):
+        export_format = Prompt.ask(
+            "Format d'export",
+            choices=["csv", "txt"],
+            default="csv",
+            console=console,
+        )
+        export_path = Prompt.ask(
+            "Chemin du fichier",
+            default=f"alias_bannis.{export_format}",
+            console=console,
+        )
+
     accounts_file, account_names, cookie_file, account_name = pick_accounts()
 
     if dry_run:
@@ -442,6 +463,7 @@ def interactive_ban_check() -> None:
         [
             ("Mode", mode),
             ("Action", "désactiver + supprimer" if action == "delete" else "désactiver"),
+            ("Export", f"{export_path} ({export_format})" if export_path else "—"),
             ("Accounts file", accounts_file or "—"),
             (
                 "Account(s)",
@@ -463,6 +485,8 @@ def interactive_ban_check() -> None:
             account_name=account_name,
             dry_run=dry_run,
             action=action,
+            export_path=export_path,
+            export_format=export_format,
         )
     )
 
@@ -704,7 +728,25 @@ def activatecommand(key):
     default=False,
     help="Act on banned aliases without the per-account confirmation prompt.",
 )
-def bancheckcommand(accounts_file, account, dry_run, delete_mode, assume_yes):
+@click.option(
+    "--export",
+    "export_path",
+    default=None,
+    help=(
+        "Export the flagged aliases (those that would be deactivated/deleted) to "
+        "this file. The format is inferred from the extension (.txt → one alias "
+        "per line, otherwise CSV) unless --export-format is given."
+    ),
+)
+@click.option(
+    "--export-format",
+    type=click.Choice(["txt", "csv"]),
+    default=None,
+    help="Force the export format (default: inferred from the --export extension).",
+)
+def bancheckcommand(
+    accounts_file, account, dry_run, delete_mode, assume_yes, export_path, export_format
+):
     "Detect Amazon-ban aliases (baa-customer-appeal) and deactivate/delete them"
     licensing.require_license(console)
     # Default to all accounts (accounts.json) so bans map across every phone.
@@ -722,6 +764,12 @@ def bancheckcommand(accounts_file, account, dry_run, delete_mode, assume_yes):
             dry_run=dry_run,
             assume_yes=assume_yes,
             action="delete" if delete_mode else "deactivate",
+            export_path=export_path,
+            export_format=(
+                resolve_export_format(export_path, export_format)
+                if export_path
+                else "csv"
+            ),
         )
     )
 

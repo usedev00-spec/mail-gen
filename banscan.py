@@ -17,6 +17,7 @@ the git-ignored ``banscan.json`` (or the ``GMAIL_*`` env vars).
 """
 
 import asyncio
+import csv
 import getpass
 import imaplib
 import json
@@ -155,6 +156,70 @@ def classify_deactivate_probe(response) -> str:
         return "ambiguous"
 
     return "ok"
+
+
+def build_flagged_rows(
+    banned_by_account: dict[str, list[dict]], delete_mode: bool
+) -> list[dict]:
+    """Flatten the aliases the run would act on into export rows.
+
+    Mirrors the ``to_process`` selection used by the action loop: in delete mode
+    every banned alias is targeted (inactive ones are deleted directly), otherwise
+    only the still-active ones would be deactivated. Each row is a dict with
+    ``account``/``label``/``alias``/``active`` keys.
+    """
+    rows: list[dict] = []
+    for name, banned in banned_by_account.items():
+        targeted = banned if delete_mode else [r for r in banned if r.get("isActive")]
+        for record in targeted:
+            rows.append(
+                {
+                    "account": name,
+                    "label": str(record.get("label", "")),
+                    "alias": str(record.get("hme", "")),
+                    "active": bool(record.get("isActive")),
+                }
+            )
+    return rows
+
+
+def resolve_export_format(path: str, explicit: str | None = None) -> str:
+    """Return the export format ("txt" or "csv") for ``path``.
+
+    An ``explicit`` choice wins; otherwise the format is inferred from the file
+    extension (``.txt`` → txt), defaulting to csv.
+    """
+    if explicit in ("txt", "csv"):
+        return explicit
+    return "txt" if path.lower().endswith(".txt") else "csv"
+
+
+def export_flagged_aliases(rows: list[dict], path: str, fmt: str = "csv") -> None:
+    """Write the flagged aliases (theoretically to deactivate/delete) to ``path``.
+
+    ``fmt`` is ``"csv"`` (columns Compte/Label/Alias/État) or ``"txt"`` (one alias
+    address per line — a plain, ready-to-reuse list). An empty ``rows`` still writes
+    a valid file (CSV header only / empty txt) so the caller reliably produces the
+    file it promised the user.
+    """
+    if fmt == "txt":
+        with open(path, "w", encoding="utf-8") as f:
+            for row in rows:
+                f.write(f"{row['alias']}\n")
+        return
+
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["Compte", "Label", "Alias", "État"])
+        for row in rows:
+            writer.writerow(
+                [
+                    row["account"],
+                    row["label"],
+                    row["alias"],
+                    "actif" if row["active"] else "inactif",
+                ]
+            )
 
 
 # --------------------------------------------------------------------------- #
@@ -498,6 +563,21 @@ def _resolve_accounts(
 # --------------------------------------------------------------------------- #
 # Orchestration
 # --------------------------------------------------------------------------- #
+def _write_flagged_export(
+    rows: list[dict], path: str, fmt: str, console: Console
+) -> None:
+    """Write the flagged-alias export and log the outcome (never raises)."""
+    try:
+        export_flagged_aliases(rows, path, fmt)
+    except OSError as exc:
+        console.log(f"[bold red][ERR][/] Écriture de l'export impossible : {exc}")
+        return
+    console.log(
+        f"[green]★ {len(rows)} alias signalé(s) exporté(s) vers « {path} » "
+        f"(format {fmt}).[/]"
+    )
+
+
 async def run_ban_check(
     accounts_file: str | None = None,
     account_names: list[str] | None = None,
@@ -506,6 +586,8 @@ async def run_ban_check(
     dry_run: bool = False,
     assume_yes: bool = False,
     action: str = "deactivate",
+    export_path: str | None = None,
+    export_format: str = "csv",
     gmail_config_path: str = DEFAULT_GMAIL_CONFIG,
     console: Console | None = None,
 ) -> None:
@@ -549,6 +631,8 @@ async def run_ban_check(
         )
     if not candidates:
         console.log("[green]Aucun alias banni détecté. Rien à faire.[/]")
+        if export_path:
+            _write_flagged_export([], export_path, export_format, console)
         return
 
     # 2) List every account's aliases (in parallel) to know who owns what.
@@ -609,6 +693,12 @@ async def run_ban_check(
             f"[yellow]{len(orphans)} adresse(s) bannie(s) sans compte iCloud "
             f"configuré (ignorée(s)) : {', '.join(sorted(orphans))}[/]"
         )
+
+    # Export the flagged aliases (what would be deactivated/deleted) if requested.
+    # Built from the mapping so the list is complete regardless of cookie state.
+    if export_path:
+        flagged_rows = build_flagged_rows(banned_by_account, delete_mode)
+        _write_flagged_export(flagged_rows, export_path, export_format, console)
 
     if not banned_by_account:
         return

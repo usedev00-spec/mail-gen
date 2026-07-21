@@ -1,6 +1,8 @@
 import asyncio
+import csv
 import os
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -9,9 +11,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from banscan import (
     _build_search_criteria,
     _process_records,
+    build_flagged_rows,
     classify_deactivate_probe,
+    export_flagged_aliases,
     extract_recipient_addresses,
     map_banned_to_accounts,
+    resolve_export_format,
 )
 
 
@@ -175,6 +180,86 @@ class ClassifyDeactivateProbeTest(unittest.TestCase):
             "ok",
         )
         self.assertEqual(classify_deactivate_probe({"success": True}), "ok")
+
+
+class BuildFlaggedRowsTest(unittest.TestCase):
+    def setUp(self):
+        self.banned_by_account = {
+            "iPhone1": [
+                {"hme": "a@icloud.com", "label": "Amazon A", "isActive": True},
+                {"hme": "b@icloud.com", "label": "Amazon B", "isActive": False},
+            ],
+            "iPhone2": [
+                {"hme": "c@icloud.com", "label": "Amazon C", "isActive": True},
+            ],
+        }
+
+    def test_deactivate_mode_keeps_only_active_aliases(self):
+        rows = build_flagged_rows(self.banned_by_account, delete_mode=False)
+        self.assertEqual(
+            [(r["account"], r["alias"]) for r in rows],
+            [("iPhone1", "a@icloud.com"), ("iPhone2", "c@icloud.com")],
+        )
+
+    def test_delete_mode_keeps_every_banned_alias(self):
+        rows = build_flagged_rows(self.banned_by_account, delete_mode=True)
+        self.assertEqual(
+            {r["alias"] for r in rows},
+            {"a@icloud.com", "b@icloud.com", "c@icloud.com"},
+        )
+
+    def test_row_carries_label_and_state(self):
+        rows = build_flagged_rows(self.banned_by_account, delete_mode=True)
+        inactive = next(r for r in rows if r["alias"] == "b@icloud.com")
+        self.assertEqual(inactive["label"], "Amazon B")
+        self.assertFalse(inactive["active"])
+
+
+class ResolveExportFormatTest(unittest.TestCase):
+    def test_explicit_choice_wins(self):
+        self.assertEqual(resolve_export_format("out.csv", "txt"), "txt")
+
+    def test_inferred_from_extension(self):
+        self.assertEqual(resolve_export_format("out.txt"), "txt")
+        self.assertEqual(resolve_export_format("OUT.TXT"), "txt")
+        self.assertEqual(resolve_export_format("out.csv"), "csv")
+
+    def test_defaults_to_csv_without_txt_extension(self):
+        self.assertEqual(resolve_export_format("flagged"), "csv")
+
+
+class ExportFlaggedAliasesTest(unittest.TestCase):
+    def setUp(self):
+        self.rows = [
+            {"account": "iPhone1", "label": "Amazon A", "alias": "a@icloud.com", "active": True},
+            {"account": "iPhone2", "label": "Amazon C", "alias": "c@icloud.com", "active": False},
+        ]
+
+    def _write(self, fmt, rows=None):
+        fd, path = tempfile.mkstemp(suffix=f".{fmt}")
+        os.close(fd)
+        self.addCleanup(os.unlink, path)
+        export_flagged_aliases(self.rows if rows is None else rows, path, fmt)
+        return path
+
+    def test_txt_is_one_alias_per_line(self):
+        with open(self._write("txt"), encoding="utf-8") as f:
+            self.assertEqual(f.read(), "a@icloud.com\nc@icloud.com\n")
+
+    def test_csv_has_header_and_localized_state(self):
+        with open(self._write("csv"), newline="", encoding="utf-8") as f:
+            rows = list(csv.reader(f))
+        self.assertEqual(rows[0], ["Compte", "Label", "Alias", "État"])
+        self.assertEqual(rows[1], ["iPhone1", "Amazon A", "a@icloud.com", "actif"])
+        self.assertEqual(rows[2], ["iPhone2", "Amazon C", "c@icloud.com", "inactif"])
+
+    def test_empty_rows_still_write_csv_header(self):
+        with open(self._write("csv", rows=[]), newline="", encoding="utf-8") as f:
+            self.assertEqual(list(csv.reader(f)), [["Compte", "Label", "Alias", "État"]])
+
+    def test_empty_rows_write_empty_txt(self):
+        with open(self._write("txt", rows=[]), encoding="utf-8") as f:
+            self.assertEqual(f.read(), "")
 
 
 @mock.patch("banscan.random.uniform", return_value=0)
