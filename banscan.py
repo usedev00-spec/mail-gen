@@ -37,6 +37,7 @@ from rich.table import Table
 from main import (
     DEFAULT_ACCOUNTS_FILE,
     DEFAULT_COOKIE_FILE,
+    TEXT_COLOR,
     AccountConfig,
     RichHideMyEmail,
     filter_accounts,
@@ -401,7 +402,7 @@ def load_gmail_config(
                 '"accounts" list, or set the GMAIL_ADDRESS and GMAIL_APP_PASSWORD '
                 "environment variables."
             )
-        console = console or Console()
+        console = console or Console(style=TEXT_COLOR)
         console.print(
             "[dim]No Gmail credentials found. Enter the Gmail account your aliases "
             "forward to (an app password is required — Gmail settings → Security → "
@@ -684,7 +685,7 @@ async def _process_records(
                 continue
 
         done.append(alias)
-        console.log(f"({account_name}) [green]✓ {verb}[/] : {alias}")
+        console.log(f"({account_name}) [#45768c]✓ {verb}[/] : {alias}")
 
         # Gentle, human-ish pacing between actions on the same account.
         if index < len(records) - 1:
@@ -728,7 +729,7 @@ def _write_flagged_export(
         console.log(f"[bold red][ERR][/] Écriture de l'export impossible : {exc}")
         return
     console.log(
-        f"[green]★ {len(rows)} alias signalé(s) exporté(s) vers « {path} » "
+        f"[#45768c]★ {len(rows)} alias signalé(s) exporté(s) vers « {path} » "
         f"(format {fmt}).[/]"
     )
 
@@ -776,7 +777,7 @@ async def run_ban_check(
     gmail_config_path: str = DEFAULT_GMAIL_CONFIG,
     console: Console | None = None,
 ) -> None:
-    console = console or Console()
+    console = console or Console(style=TEXT_COLOR)
 
     # 1) Load the Gmail inbox(es) and the ban signals (modes) to scan for.
     try:
@@ -793,7 +794,7 @@ async def run_ban_check(
         console.log("[bold red][ERR][/] Aucun mode de scan sélectionné.")
         return
 
-    console.rule("[bold green]Scan des mails de ban Amazon")
+    console.rule("[bold #45768c]Scan des mails de ban Amazon")
     console.log(
         f"{len(gmail_accounts)} boîte(s) Gmail à scanner : "
         + ", ".join(account["address"] for account in gmail_accounts)
@@ -833,7 +834,7 @@ async def run_ban_check(
             "[dim]Alias destinataires extraits :[/] " + ", ".join(sorted(candidates))
         )
     else:
-        console.log("[green]Aucun alias banni détecté. Rien à faire.[/]")
+        console.log("[#45768c]Aucun alias banni détecté. Rien à faire.[/]")
         if export_path:
             _write_flagged_export([], export_path, export_format, console)
         return
@@ -847,7 +848,7 @@ async def run_ban_check(
         console.log(f"[bold red][ERR][/] {exc}")
         return
 
-    console.rule("[bold green]Comptes iCloud")
+    console.rule("[bold #45768c]Comptes iCloud")
     results = await asyncio.gather(
         *(_fetch_account_records(account, console) for account in accounts)
     )
@@ -876,10 +877,10 @@ async def run_ban_check(
     def action_for(record: dict) -> str:
         return candidate_action.get((record.get("hme") or "").lower(), "deactivate")
 
-    console.rule("[bold green]Alias bannis par compte iCloud")
+    console.rule("[bold #45768c]Alias bannis par compte iCloud")
     if not banned_by_account:
         console.log(
-            "[green]Aucun des alias bannis ne correspond à un compte iCloud "
+            "[#45768c]Aucun des alias bannis ne correspond à un compte iCloud "
             "configuré.[/]"
         )
     for name, records in banned_by_account.items():
@@ -891,7 +892,7 @@ async def run_ban_check(
         table.add_column("État")
         table.add_column("Action")
         for record in records:
-            state = "[green]actif[/]" if record.get("isActive") else "[dim]inactif[/]"
+            state = "[#45768c]actif[/]" if record.get("isActive") else "[dim]inactif[/]"
             action_label = (
                 "[red]désact. + suppr.[/]"
                 if action_for(record) == "delete"
@@ -921,7 +922,7 @@ async def run_ban_check(
 
     # 5) Per account: probe deactivation capability, then (confirm →) act, one
     #    action group ("deactivate"/"delete") at a time.
-    console.rule("[bold green]Vérification & action")
+    console.rule("[bold #45768c]Vérification & action")
     total_done = total_failed = total_skipped = 0
 
     for name, banned in banned_by_account.items():
@@ -952,7 +953,7 @@ async def run_ban_check(
                     "(sonde ambiguë). On tentera quand même après confirmation.[/]"
                 )
             else:
-                console.log(f"({name}) [green]✓ Cookies OK[/] (test : {method}).")
+                console.log(f"({name}) [#45768c]✓ Cookies OK[/] (test : {method}).")
 
             # Process each action group separately so appeal aliases can be
             # deactivated while on-hold aliases are deactivated + deleted.
@@ -981,7 +982,7 @@ async def run_ban_check(
                 if dry_run:
                     verb = "désactivés + supprimés" if delete_mode else "désactivés"
                     console.log(
-                        f"({name}) [cyan]Dry-run[/] : {len(to_process)} alias "
+                        f"({name}) [#45768c]Dry-run[/] : {len(to_process)} alias "
                         f"seraient {verb} (aucune action réelle)."
                     )
                     continue
@@ -1010,7 +1011,7 @@ async def run_ban_check(
                 total_done += len(done)
                 total_failed += len(failed)
 
-    console.rule("[bold green]Résumé")
+    console.rule("[bold #45768c]Résumé")
     console.log(
         f"[bold]Traités : {total_done}  |  "
         f"Ignorés : {total_skipped}  |  Échecs : {total_failed}[/]"

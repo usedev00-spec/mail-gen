@@ -18,7 +18,6 @@
 - [Lancer l'application (menu interactif)](#-lancer-lapplication-menu-interactif)
 - [Générer des alias](#-générer-des-alias)
 - [Lister / exporter tes alias](#-lister--exporter-tes-alias)
-- [Mode ligne de commande](#-mode-ligne-de-commande-rapide)
 - [Plusieurs comptes iCloud](#-plusieurs-comptes-icloud)
 - [Détecter, désactiver & supprimer les alias bannis Amazon](#-détecter-désactiver--supprimer-les-alias-bannis-amazon)
 - [Mettre à jour](#-mettre-à-jour-le-projet)
@@ -59,25 +58,20 @@ pip install -r requirements.txt
 
 ## 🔑 Activer ta clé d'accès
 
-L'outil nécessite une **clé d'accès** (fournie par l'auteur). Tu n'as à le faire **qu'une seule fois** :
-
-```bash
-python3 cli.py activate TA_CLE_ICI
-```
-
-Résultat :
+L'outil nécessite une **clé d'accès** (fournie par l'auteur). Tu n'as à le faire **qu'une seule fois** : lance simplement l'application (`python3 cli.py`). Si aucune clé valide n'est enregistrée, elle te la **demande au démarrage** — colle ta clé, et c'est fait :
 
 ```text
-✓ Access key activated for client-01 (expires: never).
+An access key is required to use this tool.
+Access key: TA_CLE_ICI
+✓ Access key accepted.
 ```
 
 La clé est enregistrée dans `~/.hidemyemail/license.key` et réutilisée automatiquement à chaque lancement.
 
-> 💡 Tu peux aussi définir la clé via une variable d'environnement, sans activer :
+> 💡 Tu peux aussi définir la clé via une variable d'environnement, sans passer par le prompt :
 > ```bash
 > export HIDEMYEMAIL_KEY="TA_CLE_ICI"
 > ```
-> Si aucune clé valide n'est trouvée, l'application te la demandera au démarrage.
 
 ---
 
@@ -100,7 +94,7 @@ Pour communiquer avec Apple, l'outil a besoin de ton cookie de session iCloud. T
 <p align="center"><img src="docs/export-cookies.png" width=70%></p>
 
 5. Colle le contenu exporté dans un fichier **à l'intérieur du dossier `cookies/`** :
-   - Pour ton compte principal (celui utilisé par défaut, sans `--accounts-file`) : **`cookies/cookie.txt`**.
+   - Pour ton compte principal (le cookie par défaut, option `0` du menu) : **`cookies/cookie.txt`**.
    - Pour un compte supplémentaire (multi-comptes) : **n'importe quel nom**, ex. `cookies/perso.txt`, `cookies/boulot.txt` — tant que ça finit en `.txt` et que tu réutilises ce nom dans `accounts.json` (voir [Plusieurs comptes iCloud](#-plusieurs-comptes-icloud)).
 
 Le dépôt fournit des **modèles suivis par git** dans ce même dossier — [`cookies/cookie.example.txt`](./cookies/cookie.example.txt), [`cookies/secondary.example.txt`](./cookies/secondary.example.txt), [`cookies/third.example.txt`](./cookies/third.example.txt) — mis à jour à chaque `git pull`. Le plus simple : copie un modèle, renomme-le sans `.example`, et colle-y ton vrai cookie.
@@ -132,19 +126,23 @@ Tu verras ceci :
 │           Generate & manage your email aliases           │
 │                                                          │
 ╰────────────────────────────────────────────────────────╯
-╭─────────────────────── Menu ───────────────────────╮
-│   [1]    Generate    Create new HideMyEmail aliases  │
-│   [2]    List        Browse & export existing aliases│
-│   [0]    Quit        Exit the program                │
-╰─────────────────────────────────────────────────────╯
-Select an option [1/2/0] (1):
+╭──────────────────────── Menu ────────────────────────╮
+│   [1]    Generate    Create new HideMyEmail aliases    │
+│   [2]    List        Browse & export existing aliases  │
+│   [3]    Ban check   Détecter/désactiver les alias bannis│
+│   [0]    Quit        Exit the program                  │
+╰───────────────────────────────────────────────────────╯
+Select an option [1/2/3/0] (1):
 ```
 
 - **1** → Générer de nouveaux alias
 - **2** → Lister / exporter tes alias existants
+- **3** → Détecter les alias bannis Amazon et les désactiver/supprimer
 - **0** → Quitter
 
 Tape le numéro et appuie sur **Entrée**.
+
+> ℹ️ **Tout se pilote depuis ce menu.** Il n'y a plus de sous-commandes (`generate`, `list`, …) : `python3 cli.py` lance toujours le menu, et tu navigues avec les chiffres.
 
 ---
 
@@ -179,6 +177,9 @@ Spread the run over how many hours? (313.0): 313
 Which account(s)? Numbers or names, comma-separated — e.g. "1,2,4" (all): 1,2,4,5
 Selected 4/5 account(s): main, iCloud2, iCloud4, iCloud5
 
+Save the generated aliases to the global file or a separate daily file? [global/daily] (global): daily
+Daily file name (emails_01_08_26.txt):
+
 ╭──────────────────── Review ─────────────────────╮
 │         Aliases    200                           │
 │    Max per hour    5/hour                        │
@@ -186,6 +187,7 @@ Selected 4/5 account(s): main, iCloud2, iCloud4, iCloud5
 │        Duration    313 h (~14 day(s))            │
 │            Pace    ~0.6/hour                     │
 │        Override    off (safe defaults)           │
+│         Save to    emails_01_08_26.txt (daily)   │
 │   Accounts file    accounts.json                 │
 │      Account(s)    main, iCloud2, iCloud4, iCloud5 │
 ╰───────────────────────────────────────────────────╯
@@ -201,6 +203,9 @@ Que veulent dire les questions ?
 | **Maximum… per calendar day** | Plafond d'alias par jour calendaire (15 par défaut, en sécurité) |
 | **Spread the run over how many hours** | Sur combien d'heures étaler la génération (pré-rempli avec la durée sûre calculée juste au-dessus) |
 | **Which account(s)?** | Quels comptes utiliser, si un `accounts.json` existe : `all` (défaut) pour tous, des numéros ou noms séparés par des virgules pour un sous-ensemble (ex. `1,2,4` ou `main,iCloud4`), un seul numéro pour un seul compte, ou `0` pour le cookie par défaut |
+| **Save… global file or a separate daily file?** | Où enregistrer les alias générés : `global` (défaut) les ajoute à `emails.txt` (le fichier qui recense **tous** les alias jamais générés, comportement historique), ou `daily` pour un **fichier daté du jour** (`emails_JJ_MM_AA.txt`, ex. `emails_01_08_26.txt`, nom modifiable). Les runs du même jour s'ajoutent au même fichier daté. |
+
+> 🗂️ **Global ou par jour, au choix.** Dans les deux cas, l'historique interne `generation_log.jsonl` (qui sert à compter les alias du jour et à respecter les limites) reste tenu à part et n'est pas affecté par ce choix. Le fichier daté est un export **en plus/à la place** de la liste globale, pas un remplacement de l'historique.
 
 > ✅ **Le script ne s'arrête jamais avant d'avoir généré le nombre demandé.** Si tu demandes 200 alias, il tourne le temps qu'il faut (plusieurs jours si besoin) en respectant 5/heure et 15/jour — il ne s'arrête pas à 15 puis abandonne. Il faut juste **laisser le terminal ouvert** pendant toute la durée (voir plus bas pour lancer ça en arrière-plan).
 
@@ -234,15 +239,9 @@ Proceed? [y/n] (n):
 
 Par défaut, **impossible de dépasser 5/heure et 15/jour**, même si tu tapes un chiffre plus grand dans un prompt : la valeur est automatiquement ramenée (« clamped ») à la limite sûre, avec un message clair.
 
-Pour dépasser ces limites en connaissance de cause :
+Pour dépasser ces limites en connaissance de cause, dans le **menu** : réponds `y` à *« Override the safe limits… »*. Un avertissement rouge s'affiche, puis tu peux choisir un rythme horaire et un plafond journalier plus élevés.
 
-- **Menu interactif** : réponds `y` à *« Override the safe limits… »*. Un avertissement rouge s'affiche, puis tu peux choisir un rythme horaire et un plafond journalier plus élevés.
-- **Ligne de commande** : ajoute `--override-limits`, avec éventuellement `--daily-limit` et `--max-per-hour` :
-  ```bash
-  python3 cli.py generate --count 50 --daily-limit 40 --max-per-hour 10 --override-limits
-  ```
-
-Sans `--override-limits`, `--daily-limit 40` et `--max-per-hour 10` seraient silencieusement ramenés à 15 et 5. Le flag doit être **explicite** — ce n'est jamais activé par accident.
+Taper un chiffre plus grand dans un prompt **sans** avoir activé l'override ne suffit pas : la valeur est silencieusement ramenée à la limite sûre (15/jour, 5/heure). Le dépassement doit être **explicite** — ce n'est jamais activé par accident.
 
 En mode override, la durée proposée correspond **exactement au rythme demandé** : `count / max-per-hour`. Exemple : 25 alias à 5/heure → durée suggérée de **5 h**, et le run se termine bien dans cette fenêtre (pas de rallongement automatique au rythme « confortable » de 4/heure utilisé hors override). L'historique du jour est aussi ignoré dans le calcul, comme pendant la génération. La durée n'est rallongée que si elle est mathématiquement impossible (ex. 50 alias avec un plafond de 25/jour ne tiennent pas en 10 h).
 
@@ -252,7 +251,7 @@ En mode override, la durée proposée correspond **exactement au rythme demandé
 
 ## 📋 Lister / exporter tes alias
 
-Choisis **`2`** dans le menu (ou `python3 cli.py list`). L'outil affiche d'abord le total exact renvoyé par Apple pour ce compte (pratique pour vérifier que rien ne manque), puis un tableau :
+Choisis **`2`** dans le menu. L'outil affiche d'abord le total exact renvoyé par Apple pour ce compte (pratique pour vérifier que rien ne manque), puis un tableau :
 
 ```text
 [00:38:56] Apple returned 662 alias(es) total for this account (662 active,
@@ -267,45 +266,7 @@ Choisis **`2`** dans le menu (ou `python3 cli.py list`). L'outil affiche d'abord
 
 Ce total est **toujours complet** (un seul appel API, sans pagination). S'il te semble inférieur à ce que tu vois ailleurs, voir la FAQ *« J'ai plus d'adresses dans Réglages iCloud sur mon iPhone »* ci-dessous.
 
-Tu peux **exporter en CSV** : le menu te le propose, ou en ligne de commande :
-
-```bash
-python3 cli.py list --export mes_alias.csv
-```
-
----
-
-## ⚡ Mode ligne de commande (rapide)
-
-Si tu préfères tout passer en une commande, sans le menu :
-
-```bash
-# 15 alias étalés sur 4 heures (≈ 4/heure)
-python3 cli.py generate --count 15 --duration 4
-
-# laisse l'outil choisir une durée sûre, plafond à 15/jour (défaut)
-python3 cli.py generate --count 15
-
-# dépasse volontairement les limites sûres (à tes risques)
-python3 cli.py generate --count 50 --daily-limit 40 --max-per-hour 10 --override-limits
-
-# lister les alias actifs
-python3 cli.py list
-
-# afficher l'aide
-python3 cli.py --help
-python3 cli.py generate --help
-```
-
-| Option | Rôle |
-|---|---|
-| `--count` | Nombre d'alias à générer |
-| `--daily-limit` | Maximum d'alias par jour (défaut et plafond sûr : 15, sauf `--override-limits`) |
-| `--max-per-hour` | Maximum d'alias par heure glissante (défaut et plafond sûr : 5, sauf `--override-limits`) |
-| `--override-limits` | Active volontairement le dépassement des limites sûres, à tes risques |
-| `--duration` | Nombre d'heures pour étaler le run (sinon, rythme sûr automatique) |
-| `--accounts-file` | Fichier JSON multi-comptes (voir ci-dessous) |
-| `--account` | Restreint le run à certains comptes du fichier (répétable ou séparés par des virgules : `--account "main,iCloud2"`) |
+Tu peux **exporter en CSV** : le menu te le propose (réponds `y` à *« Export results to a CSV file? »* puis donne un chemin, ex. `mes_alias.csv`).
 
 ---
 
@@ -335,29 +296,13 @@ Chaque `cookie_file` pointe vers un fichier du dossier **[`cookies/`](./cookies)
 À savoir sur `accounts.json` :
 
 - Chaque compte n'a que **deux champs**, tous les deux obligatoires : `name` (un nom pour l'identifier dans les logs) et `cookie_file` (le chemin de son cookie iCloud, en général dans `cookies/`).
-- **Aucune limite ne se configure par compte.** Le nombre d'alias, la limite/jour, le rythme/heure et l'override s'appliquent **globalement**, via `--count`, `--daily-limit`, `--max-per-hour` et `--override-limits` (ou les prompts du menu) — les mêmes réglages pour tous les comptes du fichier.
+- **Aucune limite ne se configure par compte.** Le nombre d'alias, la limite/jour, le rythme/heure et l'override s'appliquent **globalement**, via les prompts du menu — les mêmes réglages pour tous les comptes du fichier.
 - Tous les comptes tournent **en parallèle**, chacun respectant les mêmes limites sûres par défaut (5/heure, 15/jour), et chacun avec son propre compteur de génération du jour (voir plus bas).
 - Les chemins relatifs sont résolus depuis le dossier qui contient `accounts.json`.
 - `accounts.json` est **ignoré par git** : jamais poussé en ligne (seul `accounts.example.json` est suivi).
 - Si `accounts.json` est mal formé, s'il manque `name` ou `cookie_file` sur un compte, ou si un `cookie_file` référencé n'existe pas, l'outil affiche une erreur claire et s'arrête proprement (pas de stacktrace).
 
-```bash
-# Générer pour tous les comptes du fichier (--count obligatoire pour le multi-compte)
-python3 cli.py generate --accounts-file accounts.json --count 15
-
-# Générer pour un sous-ensemble de comptes seulement (ex. 4 comptes sur 5) :
-# répète --account, ou passe une liste séparée par des virgules
-python3 cli.py generate --count 15 --account "main,iCloud2,iCloud4,iCloud5"
-python3 cli.py generate --count 15 --account main --account iCloud2
-
-# Lister sur tous les comptes, avec export
-python3 cli.py list --accounts-file accounts.json --export tous_les_comptes.csv
-
-# Lister seulement certains comptes
-python3 cli.py list --account "iCloud2,iCloud3"
-```
-
-> 💡 Dans le **menu interactif**, plus besoin de flags : dès qu'un `accounts.json` existe, un tableau des comptes s'affiche et tu tapes simplement les numéros voulus (ex. `1,2,4,5` pour 4 comptes sur 5), `all` pour tous, ou `0` pour le cookie par défaut.
+> 💡 Tout se passe dans le **menu** : dès qu'un `accounts.json` existe, choisis **`1`** (Generate) ou **`2`** (List), et un tableau des comptes s'affiche. Tape simplement les numéros voulus (ex. `1,2,4,5` pour 4 comptes sur 5), `all` pour tous, ou `0` pour le cookie par défaut. Les mêmes réglages (nombre, limites, override) s'appliquent à tous les comptes sélectionnés, qui tournent en parallèle.
 
 Pendant la génération multi-comptes, un **tableau de bord en direct** affiche une ligne par compte avec son propre compte à rebours :
 
@@ -409,7 +354,7 @@ forte l'emporte).
    - **désactivation + suppression** : désactive puis **supprime définitivement** l'alias.
      iCloud n'autorise la suppression que d'un alias désactivé, donc l'ordre désactiver →
      supprimer est fait automatiquement. ⚠️ **Irréversible.** Le mode `on-hold` fait ça par
-     défaut ; pour `appeal`, ajoute le drapeau `--delete` (ou le prompt du menu).
+     défaut ; pour `appeal`, réponds `y` au prompt « les supprimer définitivement… ? » du menu.
      L'authentification reste la même (tes cookies).
 
 **Configuration (une seule fois) — le(s) mot(s) de passe d'application Gmail :**
@@ -474,41 +419,16 @@ désactiver) ; le signal `on-hold` supprime déjà par défaut. En dry-run, il t
 d'**exporter la liste des alias signalés** (ceux théoriquement à traiter) vers un fichier
 **`.txt`** (un alias par ligne) ou **`.csv`** (colonnes Compte, Label, Alias, État).
 
-En ligne de commande (le mode par défaut est `appeal`) :
+Le déroulé du menu (par défaut : mode `appeal`, dry-run, tous les comptes du `accounts.json`) :
 
-```bash
-# scan + rapport uniquement (aucune action), sur tous les comptes du accounts.json
-python3 cli.py bancheck --dry-run
+1. **Quels signaux de ban chercher ?** — `appeal` (défaut), `on-hold`, ou `all` (les deux).
+2. **Mode simulation (dry-run) ?** — `y` par défaut : scan + rapport, aucune action.
+3. Si `appeal` est sélectionné : **les supprimer définitivement en plus de les désactiver ?** — `n` par défaut. (`on-hold` supprime déjà.)
+4. En dry-run : **exporter la liste des alias signalés ?** vers un fichier **`.txt`** (un alias par ligne) ou **`.csv`** (colonnes Compte, Label, Alias, État).
+5. **Quels comptes ?** — comme pour la génération (numéros, `all`, ou `0`).
+6. Un récap s'affiche, puis l'outil scanne, croise Gmail ↔ comptes iCloud, et demande **confirmation par compte** avant d'agir.
 
-# chercher le signal « compte on hold » (désactive + supprime par défaut)
-python3 cli.py bancheck --mode on-hold --dry-run
-
-# chercher les deux signaux en une passe (appeal → désactive, on-hold → désactive+supprime)
-python3 cli.py bancheck --mode all --dry-run
-
-# dry-run + export de la liste des alias signalés (format déduit de l'extension)
-python3 cli.py bancheck --dry-run --export alias_bannis.csv
-python3 cli.py bancheck --dry-run --export alias_bannis.txt
-# forcer le format quel que soit le nom de fichier
-python3 cli.py bancheck --dry-run --export alias_bannis.dat --export-format csv
-
-# scan puis DÉSACTIVATION (réversible), avec une confirmation par compte
-python3 cli.py bancheck
-
-# scan puis DÉSACTIVATION + SUPPRESSION définitive (irréversible), confirmation par compte
-# (--delete force la suppression sur TOUS les modes sélectionnés, y compris appeal)
-python3 cli.py bancheck --delete
-python3 cli.py bancheck --mode all --delete
-
-# limiter à certains comptes
-python3 cli.py bancheck --account "iCloud2,iCloud3"
-
-# agir sans confirmation par compte (à utiliser en connaissance de cause)
-python3 cli.py bancheck --yes
-python3 cli.py bancheck --mode all --yes
-```
-
-> 📄 **`--export`** liste les alias qui *seraient* traités : ceux à désactiver ne comptent
+> 📄 **L'export** liste les alias qui *seraient* traités : ceux à désactiver ne comptent
 > que s'ils sont encore actifs, ceux à supprimer comptent toujours (les inactifs sont
 > supprimés directement). La liste est établie à partir du croisement Gmail ↔ comptes
 > iCloud, donc elle est complète même si les cookies d'un compte sont périmés.
@@ -536,7 +456,7 @@ git pull --ff-only origin main
 Apple autorise environ 5 alias toutes les ~30 min, et plafonne autour de ~700 au total. L'outil respecte automatiquement ≤ 5/heure pour rester safe.
 
 **L'application me demande une clé d'accès, c'est normal ?**
-Oui. Active-la une fois avec `python3 cli.py activate TA_CLE`. Voir [Activer ta clé d'accès](#-activer-ta-clé-daccès).
+Oui. Au premier lancement (`python3 cli.py`), l'application te demande ta clé et l'enregistre pour la suite. Voir [Activer ta clé d'accès](#-activer-ta-clé-daccès).
 
 **« An access key is required » ou « Invalid or expired key »**
 Ta clé est manquante, mal copiée ou expirée. Recolle-la entièrement, ou demande une nouvelle clé à l'auteur.

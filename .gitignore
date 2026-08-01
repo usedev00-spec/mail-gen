@@ -3,6 +3,8 @@ venv/
 build/
 dist/
 emails.txt
+# Per-day export files (emails_DD_MM_YY.txt) — same private aliases as emails.txt.
+emails_*.txt
 generation_log.jsonl
 **/.DS_Store
 *.spec

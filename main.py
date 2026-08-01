@@ -26,6 +26,10 @@ DEFAULT_EMAILS_FILE = "emails.txt"
 # were already generated today (per account) across separate script runs.
 GENERATION_LOG_FILE = "generation_log.jsonl"
 
+# UI palette (blue accent + off-white text), shared by the CLI and run outputs.
+ACCENT_COLOR = "#45768c"
+TEXT_COLOR = "#d1cecf"
+
 # Safety limits that keep an iCloud account from being flagged. These are the
 # safe defaults; exceeding them requires the user to explicitly opt in via
 # --override-limits (CLI) or the "Override" prompt in the interactive menu.
@@ -364,6 +368,17 @@ def save_emails(emails: list[str], output_file: str = DEFAULT_EMAILS_FILE) -> No
         f.write(os.linesep.join(emails) + os.linesep)
 
 
+def daily_emails_filename(reference: Optional[datetime.date] = None) -> str:
+    """Return the per-day export filename, e.g. ``emails_01_08_26.txt``.
+
+    Used when the run exports the day's aliases to a separate dated file instead
+    of appending them to the running global file (``DEFAULT_EMAILS_FILE``). Same
+    day → same file, so repeat runs accumulate into it.
+    """
+    day = reference or datetime.date.today()
+    return f"emails_{day.strftime('%d_%m_%y')}.txt"
+
+
 # Serializes writes to GENERATION_LOG_FILE, since multiple accounts can
 # generate concurrently (asyncio.gather) and append to it at the same time.
 _generation_log_lock = asyncio.Lock()
@@ -495,7 +510,7 @@ class RichHideMyEmail(HideMyEmail):
         super().__init__()
         self.account_name = account_name
         self._cookie_file = cookie_file
-        self.console = console or Console()
+        self.console = console or Console(style=TEXT_COLOR)
         self.cookie_error = None
         self._load_cookies()
 
@@ -672,7 +687,7 @@ class RichHideMyEmail(HideMyEmail):
             if remaining <= 0:
                 break
             update_fn(
-                f"[bold green]Alias {index + 1}/{total}[/] "
+                f"[bold {ACCENT_COLOR}]Alias {index + 1}/{total}[/] "
                 f"([bold]{remaining_count}[/] remaining) — "
                 f"[bold]{generated_today}/{daily_limit}[/] today — next at {target_clock} "
                 f"in [bold]{self._format_duration(remaining)}[/]"
@@ -734,7 +749,7 @@ class RichHideMyEmail(HideMyEmail):
             return await run_attempts(status_sink)
         if show_status:
             with self.console.status(
-                "[bold green]Generating aliases at a safe, human pace..."
+                f"[bold {ACCENT_COLOR}]Generating aliases at a safe, human pace..."
             ) as status:
                 return await run_attempts(status.update)
         return await run_attempts()
@@ -791,6 +806,7 @@ class RichHideMyEmail(HideMyEmail):
         override_limits: bool = False,
         status_sink: Optional[Callable[[str], None]] = None,
         warn_override: bool = True,
+        output_file: str = DEFAULT_EMAILS_FILE,
     ) -> list[str]:
         try:
             if not self._ensure_cookie_configured():
@@ -858,13 +874,13 @@ class RichHideMyEmail(HideMyEmail):
             )
 
             if persist and emails:
-                save_emails(emails)
+                save_emails(emails, output_file)
                 if show_rules:
                     self.console.rule()
-                self._log(f':star: Emails have been saved into "{DEFAULT_EMAILS_FILE}"')
+                self._log(f':star: Emails have been saved into "{output_file}"')
                 self._log(
-                    f"[bold green]All done![/] Successfully generated "
-                    f"[bold green]{len(emails)}[/] email(s)"
+                    f"[bold {ACCENT_COLOR}]All done![/] Successfully generated "
+                    f"[bold {ACCENT_COLOR}]{len(emails)}[/] email(s)"
                 )
 
             return emails
@@ -1020,8 +1036,9 @@ async def generate_with_accounts_file(
     max_per_hour: Optional[int] = None,
     override_limits: bool = False,
     account_names: Optional[builtins.list[str]] = None,
+    output_file: str = DEFAULT_EMAILS_FILE,
 ) -> None:
-    console = Console()
+    console = Console(style=TEXT_COLOR)
     try:
         accounts = load_accounts_config(accounts_file)
         total_accounts = len(accounts)
@@ -1081,13 +1098,13 @@ async def generate_with_accounts_file(
         )
 
     if all_emails:
-        save_emails(all_emails)
-        console.log(f':star: Emails have been saved into "{DEFAULT_EMAILS_FILE}"')
+        save_emails(all_emails, output_file)
+        console.log(f':star: Emails have been saved into "{output_file}"')
 
     console.log(
-        f"[bold green]All done![/] Successfully generated "
-        f"[bold green]{len(all_emails)}[/] email(s) across "
-        f"[bold green]{len(accounts)}[/] account(s)"
+        f"[bold {ACCENT_COLOR}]All done![/] Successfully generated "
+        f"[bold {ACCENT_COLOR}]{len(all_emails)}[/] email(s) across "
+        f"[bold {ACCENT_COLOR}]{len(accounts)}[/] account(s)"
     )
 
 
@@ -1098,7 +1115,7 @@ async def list_with_accounts_file(
     export: Optional[str] = None,
     account_names: Optional[builtins.list[str]] = None,
 ) -> None:
-    console = Console()
+    console = Console(style=TEXT_COLOR)
     try:
         accounts = load_accounts_config(accounts_file)
         if account_names:
@@ -1135,6 +1152,7 @@ async def generate(
     cookie_file: Optional[str] = None,
     account_name: Optional[str] = None,
     account_names: Optional[builtins.list[str]] = None,
+    output_file: str = DEFAULT_EMAILS_FILE,
 ) -> None:
     if accounts_file:
         await generate_with_accounts_file(
@@ -1145,6 +1163,7 @@ async def generate(
             max_per_hour=max_per_hour,
             override_limits=override_limits,
             account_names=account_names,
+            output_file=output_file,
         )
         return
 
@@ -1158,6 +1177,7 @@ async def generate(
             duration_hours,
             max_per_hour=max_per_hour,
             override_limits=override_limits,
+            output_file=output_file,
         )
 
 

@@ -2,10 +2,8 @@
 
 import asyncio
 import math
-import os
 import re
 
-import click
 from rich import box
 from rich.align import Align
 from rich.console import Console
@@ -15,15 +13,18 @@ from rich.table import Table
 from rich.text import Text
 
 from main import (
+    ACCENT_COLOR,
     DAY_SECONDS,
     DEFAULT_COOKIE_FILE,
+    DEFAULT_EMAILS_FILE,
     HOUR_SECONDS,
     MAX_PER_DAY,
     MAX_PER_HOUR,
     OVERRIDE_RISK_WARNING,
+    TEXT_COLOR,
     analyze_plan,
     count_generated_today,
-    filter_accounts,
+    daily_emails_filename,
     format_duration,
     generate,
     list_emails,
@@ -31,12 +32,12 @@ from main import (
     resolve_effective_limits,
     suggested_duration_hours,
 )
-from banscan import BAN_SIGNAL_KEYS, resolve_export_format, run_ban_check
+from banscan import BAN_SIGNAL_KEYS, run_ban_check
 import licensing
 
-console = Console()
+console = Console(style=TEXT_COLOR)
 
-ACCENT = "green"
+ACCENT = ACCENT_COLOR
 
 
 # --------------------------------------------------------------------------- #
@@ -125,7 +126,7 @@ def pick_accounts(default_accounts_file: str = "accounts.json"):
         Panel(
             table,
             title=f"[bold]Accounts ({accounts_file})",
-            border_style="cyan",
+            border_style=ACCENT,
             box=box.ROUNDED,
         )
     )
@@ -177,66 +178,6 @@ def pick_accounts(default_accounts_file: str = "accounts.json"):
         return accounts_file, [account.name for account in selected], None, None
 
 
-def resolve_cli_accounts(account_options, accounts_file):
-    """Resolve one or more ``--account NAME`` options.
-
-    Returns ``(accounts_file, account_names, cookie_file, account_name)`` with
-    the same meaning as :func:`pick_accounts`. Exits with a clear error if a
-    named account cannot be found.
-    """
-    names = [
-        name.strip()
-        for raw in account_options
-        for name in raw.split(",")
-        if name.strip()
-    ]
-    names = list(dict.fromkeys(names))
-    if not names:
-        return accounts_file, None, None, None
-
-    path = accounts_file or "accounts.json"
-    try:
-        selected = filter_accounts(load_accounts_config(path), names)
-    except ValueError as exc:
-        console.print(f"[red]✗ {exc} (accounts file: \"{path}\")[/]")
-        raise SystemExit(1)
-
-    if len(selected) == 1:
-        return None, None, selected[0].cookie_file, selected[0].name
-    return path, names, None, None
-
-
-def resolve_ban_modes(mode_options):
-    """Resolve one or more ``--mode`` options into a list of ban-signal keys.
-
-    Accepts repeated flags or comma-separated values; ``all`` expands to every
-    known signal. Defaults to the ``appeal`` signal (the historical behaviour).
-    Exits with a clear error on an unknown mode.
-    """
-    tokens = [
-        token.strip().lower()
-        for raw in mode_options
-        for token in raw.split(",")
-        if token.strip()
-    ]
-    if not tokens:
-        return ["appeal"]
-
-    keys: list[str] = []
-    for token in tokens:
-        if token in ("all", "tous", "*"):
-            return list(BAN_SIGNAL_KEYS)
-        if token not in BAN_SIGNAL_KEYS:
-            console.print(
-                f'[red]✗ Mode inconnu : "{token}". '
-                f"Modes disponibles : {', '.join(BAN_SIGNAL_KEYS)}, all.[/]"
-            )
-            raise SystemExit(1)
-        if token not in keys:
-            keys.append(token)
-    return keys
-
-
 # --------------------------------------------------------------------------- #
 # Main menu
 # --------------------------------------------------------------------------- #
@@ -257,11 +198,11 @@ def main_menu() -> str:
         table.add_row(f"[{key}]", name, desc)
 
     console.print(
-        Panel(table, title="[bold]Menu", border_style="cyan", box=box.ROUNDED)
+        Panel(table, title="[bold]Menu", border_style=ACCENT, box=box.ROUNDED)
     )
 
     return Prompt.ask(
-        "[bold cyan]Select an option",
+        f"[bold {ACCENT}]Select an option",
         choices=[key for key, _, _ in MENU_ITEMS],
         default="1",
         console=console,
@@ -324,6 +265,23 @@ def interactive_generate() -> None:
 
     accounts_file, account_names, cookie_file, account_name = pick_accounts()
 
+    # Where to write the generated aliases: append to the running global file
+    # (every alias ever generated), or a separate per-day file (emails_DD_MM_YY.txt).
+    save_choice = Prompt.ask(
+        "Save the generated aliases to the global file or a separate daily file?",
+        choices=["global", "daily"],
+        default="global",
+        console=console,
+    )
+    if save_choice == "daily":
+        output_file = Prompt.ask(
+            "Daily file name",
+            default=daily_emails_filename(),
+            console=console,
+        )
+    else:
+        output_file = DEFAULT_EMAILS_FILE
+
     duration_seconds = duration_hours * HOUR_SECONDS
     duration_days = max(1, math.ceil(duration_seconds / DAY_SECONDS)) if duration_seconds > 0 else 0
     pace = count / duration_hours if duration_hours > 0 else float("inf")
@@ -340,6 +298,7 @@ def interactive_generate() -> None:
             ("Duration", f"{duration_hours:g} h (~{duration_days} day(s))"),
             ("Pace", "instant" if pace == float("inf") else f"~{pace:.1f}/hour"),
             ("Override", "ON — at your own risk" if override_limits else "off (safe defaults)"),
+            ("Save to", output_file + (" (daily)" if save_choice == "daily" else " (global)")),
             ("Accounts file", accounts_file or "—"),
             (
                 "Account(s)",
@@ -371,6 +330,7 @@ def interactive_generate() -> None:
             cookie_file=cookie_file,
             account_name=account_name,
             account_names=account_names,
+            output_file=output_file,
         )
     )
 
@@ -457,7 +417,7 @@ def interactive_ban_check() -> None:
     )
     mode_table.add_row("all", "Les deux", "scanne les deux signaux")
     console.print(
-        Panel(mode_table, title="[bold]Modes de scan", border_style="cyan", box=box.ROUNDED)
+        Panel(mode_table, title="[bold]Modes de scan", border_style=ACCENT, box=box.ROUNDED)
     )
     mode_choice = Prompt.ask(
         "Quels signaux de ban chercher ?",
@@ -581,278 +541,5 @@ def run_interactive_menu() -> None:
         console.rule(style="dim")
 
 
-# --------------------------------------------------------------------------- #
-# Click commands (direct, non-interactive usage)
-# --------------------------------------------------------------------------- #
-@click.group(invoke_without_command=True)
-@click.pass_context
-def cli(ctx):
-    """iCloud HideMyEmail generator. Run without a command for the menu."""
-    if ctx.invoked_subcommand is None:
-        run_interactive_menu()
-
-
-@click.command(name="generate")
-@click.option(
-    "--count", default=5, type=int, help="How many aliases to generate"
-)
-@click.option(
-    "--daily-limit",
-    default=MAX_PER_DAY,
-    type=int,
-    show_default=True,
-    help=(
-        f"Maximum aliases per calendar day. Values above {MAX_PER_DAY} are "
-        "clamped unless --override-limits is also passed."
-    ),
-)
-@click.option(
-    "--max-per-hour",
-    default=None,
-    type=int,
-    help=(
-        f"Maximum aliases per rolling hour (default {MAX_PER_HOUR}). Values "
-        f"above {MAX_PER_HOUR} are clamped unless --override-limits is also "
-        "passed."
-    ),
-)
-@click.option(
-    "--override-limits",
-    is_flag=True,
-    default=False,
-    help=(
-        "Voluntarily exceed the safe default limits "
-        f"({MAX_PER_HOUR}/hour, {MAX_PER_DAY}/day), at your own risk. Must be "
-        "passed explicitly — a large --daily-limit or --max-per-hour alone is "
-        "not enough."
-    ),
-)
-@click.option(
-    "--duration",
-    "duration_hours",
-    default=None,
-    type=float,
-    help=(
-        "Hours to spread the run over. Defaults to a safe, human pace "
-        f"(max {MAX_PER_HOUR}/hour)."
-    ),
-)
-@click.option(
-    "--accounts-file",
-    default=None,
-    help=(
-        "Path to a JSON file that lists multiple iCloud accounts, each with "
-        'a "name" and a "cookie_file". All accounts share the same '
-        "--count/--daily-limit/--max-per-hour/--override-limits."
-    ),
-)
-@click.option(
-    "--account",
-    multiple=True,
-    help=(
-        "Run only the named account(s) from the accounts file "
-        '(default "accounts.json", or --accounts-file). Repeat the flag or '
-        'pass a comma-separated list: --account main --account iCloud2, or '
-        '--account "main,iCloud2". Without it, an --accounts-file run uses '
-        "all accounts."
-    ),
-)
-def generatecommand(
-    count, daily_limit, max_per_hour, override_limits, duration_hours, accounts_file, account
-):
-    "Generate aliases at a safe, human pace"
-    licensing.require_license(console)
-    accounts_file, account_names, cookie_file, account_name = resolve_cli_accounts(
-        account, accounts_file
-    )
-    run_async(
-        generate(
-            count,
-            daily_limit,
-            duration_hours,
-            accounts_file,
-            max_per_hour=max_per_hour,
-            override_limits=override_limits,
-            cookie_file=cookie_file,
-            account_name=account_name,
-            account_names=account_names,
-        )
-    )
-
-
-@click.command(name="list")
-@click.option(
-    "--active/--inactive", default=True, help="Filter Active / Inactive emails"
-)
-@click.option(
-    "--all",
-    "show_all",
-    is_flag=True,
-    default=False,
-    help=(
-        "List/export ALL aliases (both active and inactive), matching the full "
-        "count you see in Hide My Email. Overrides --active/--inactive."
-    ),
-)
-@click.option("--search", default=None, help="Search emails")
-@click.option(
-    "--export",
-    default=None,
-    help="Export emails to a CSV file (e.g. --export emails_list.csv)",
-)
-@click.option(
-    "--accounts-file",
-    default=None,
-    help="Path to a JSON file that defines multiple iCloud accounts.",
-)
-@click.option(
-    "--account",
-    multiple=True,
-    help=(
-        "List only the named account(s) from the accounts file "
-        '(default "accounts.json", or --accounts-file). Repeat the flag or '
-        "pass a comma-separated list."
-    ),
-)
-def listcommand(active, show_all, search, export, accounts_file, account):
-    "List emails"
-    licensing.require_license(console)
-    accounts_file, account_names, cookie_file, account_name = resolve_cli_accounts(
-        account, accounts_file
-    )
-    if show_all:
-        active = None
-    run_async(
-        list_emails(
-            active,
-            search,
-            export,
-            accounts_file,
-            cookie_file=cookie_file,
-            account_name=account_name,
-            account_names=account_names,
-        )
-    )
-
-
-@click.command(name="activate")
-@click.argument("key")
-def activatecommand(key):
-    "Activate your access key"
-    if not licensing.verify(key):
-        console.print("[red]✗ Invalid or expired access key.[/]")
-        raise SystemExit(1)
-
-    licensing.save_key(key)
-    info = licensing.key_info(key)
-    console.print(
-        f"[green]✓ Access key activated[/] for [bold]{info.get('sub', '?')}[/] "
-        f"(expires: {info.get('exp', 'never')})."
-    )
-
-
-@click.command(name="bancheck")
-@click.option(
-    "--accounts-file",
-    default=None,
-    help="Path to a JSON file that defines multiple iCloud accounts.",
-)
-@click.option(
-    "--account",
-    multiple=True,
-    help=(
-        "Restrict to the named account(s) from the accounts file. Repeat the "
-        "flag or pass a comma-separated list. Without it, all accounts are used."
-    ),
-)
-@click.option(
-    "--mode",
-    "modes",
-    multiple=True,
-    help=(
-        'Which ban signal(s) to scan for: "appeal" (baa-customer-appeal, '
-        'deactivate), "on-hold" ("…temporarily on hold" subject, deactivate + '
-        'delete), or "all". Repeat the flag or pass a comma-separated list. '
-        "Default: appeal."
-    ),
-)
-@click.option(
-    "--dry-run",
-    is_flag=True,
-    default=False,
-    help="Scan & report only — never deactivate or delete any alias.",
-)
-@click.option(
-    "--delete",
-    "delete_mode",
-    is_flag=True,
-    default=False,
-    help=(
-        "Force permanent DELETE (deactivate then delete) for every selected "
-        "mode, including appeal. Irreversible. The on-hold mode already deletes "
-        "by default."
-    ),
-)
-@click.option(
-    "--yes",
-    "assume_yes",
-    is_flag=True,
-    default=False,
-    help="Act on banned aliases without the per-account confirmation prompt.",
-)
-@click.option(
-    "--export",
-    "export_path",
-    default=None,
-    help=(
-        "Export the flagged aliases (those that would be deactivated/deleted) to "
-        "this file. The format is inferred from the extension (.txt → one alias "
-        "per line, otherwise CSV) unless --export-format is given."
-    ),
-)
-@click.option(
-    "--export-format",
-    type=click.Choice(["txt", "csv"]),
-    default=None,
-    help="Force the export format (default: inferred from the --export extension).",
-)
-def bancheckcommand(
-    accounts_file, account, modes, dry_run, delete_mode, assume_yes, export_path, export_format
-):
-    "Detect Amazon-ban aliases (appeal / on-hold) and deactivate/delete them"
-    licensing.require_license(console)
-    ban_modes = resolve_ban_modes(modes)
-    # Default to all accounts (accounts.json) so bans map across every phone.
-    if not accounts_file and not account and os.path.exists("accounts.json"):
-        accounts_file = "accounts.json"
-    accounts_file, account_names, cookie_file, account_name = resolve_cli_accounts(
-        account, accounts_file
-    )
-    run_async(
-        run_ban_check(
-            accounts_file=accounts_file,
-            account_names=account_names,
-            cookie_file=cookie_file,
-            account_name=account_name,
-            dry_run=dry_run,
-            assume_yes=assume_yes,
-            modes=ban_modes,
-            force_delete=delete_mode,
-            export_path=export_path,
-            export_format=(
-                resolve_export_format(export_path, export_format)
-                if export_path
-                else "csv"
-            ),
-        )
-    )
-
-
-cli.add_command(generatecommand)
-cli.add_command(listcommand)
-cli.add_command(activatecommand)
-cli.add_command(bancheckcommand)
-
-
 if __name__ == "__main__":
-    cli()
+    run_interactive_menu()
