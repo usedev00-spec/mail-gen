@@ -67,6 +67,84 @@ _RECEIVED_FOR_RE = re.compile(r"for\s+<?([^\s<>;]+@[^\s<>;]+)>?", re.IGNORECASE)
 
 
 # --------------------------------------------------------------------------- #
+# Ban signals (scan "modes")
+# --------------------------------------------------------------------------- #
+# Each signal describes one kind of Amazon ban email to look for and what to do
+# with the aliases that received it. A signal is matched in Gmail by its
+# ``text_query`` and/or ``subject_query`` (see _build_search_criteria) and maps
+# every recipient alias to a default ``action`` ("deactivate" or "delete").
+#
+# - "appeal": the ``baa-customer-appeal`` email Amazon relays through iCloud when
+#   an account is banned — matched on the language-independent body token and, by
+#   default, only deactivated (reversible).
+# - "on-hold": the "…temporarily on hold" email — matched on its subject and, by
+#   default, deactivated AND permanently deleted.
+BAN_SIGNALS: list[dict] = [
+    {
+        "key": "appeal",
+        "label": "Compte banni (baa-customer-appeal)",
+        "text_query": "baa-customer-appeal",
+        "subject_query": "",
+        "action": "deactivate",
+    },
+    {
+        "key": "on-hold",
+        "label": "Compte « temporarily on hold »",
+        "text_query": "",
+        "subject_query": "Sign in to resolve: Your Amazon account is temporarily on hold",
+        "action": "delete",
+    },
+]
+
+BAN_SIGNAL_KEYS: list[str] = [signal["key"] for signal in BAN_SIGNALS]
+
+
+def resolve_ban_signals(
+    config: dict | None = None,
+    keys: list[str] | None = None,
+    force_delete: bool = False,
+) -> list[dict]:
+    """Return the ban signals to scan for, in ``BAN_SIGNALS`` order.
+
+    ``keys`` selects which signals to include (default: all). ``config`` may tune
+    them: a legacy top-level ``text_query`` / ``subject_query`` overrides the
+    ``appeal`` signal (backward compat with the single-signal config), and an
+    optional ``signals`` object maps a signal key to per-field overrides
+    (``text_query`` / ``subject_query`` / ``action`` / ``label``) so the queries
+    can be tweaked without code changes. ``force_delete`` upgrades every selected
+    signal's action to ``"delete"``.
+    """
+    config = config or {}
+    overrides = config.get("signals")
+    overrides = overrides if isinstance(overrides, dict) else {}
+
+    legacy: dict = {}
+    if "text_query" in config or "subject_query" in config:
+        legacy = {
+            "text_query": config.get("text_query", "baa-customer-appeal"),
+            "subject_query": config.get("subject_query", ""),
+        }
+
+    resolved: list[dict] = []
+    for base in BAN_SIGNALS:
+        key = base["key"]
+        if keys is not None and key not in keys:
+            continue
+        signal = dict(base)
+        if key == "appeal" and legacy:
+            signal.update(legacy)
+        override = overrides.get(key)
+        if isinstance(override, dict):
+            for field in ("text_query", "subject_query", "action", "label"):
+                if field in override:
+                    signal[field] = override[field]
+        if force_delete:
+            signal["action"] = "delete"
+        resolved.append(signal)
+    return resolved
+
+
+# --------------------------------------------------------------------------- #
 # Pure helpers (no network / no I/O — unit-tested in tests/test_ban_scan.py)
 # --------------------------------------------------------------------------- #
 def extract_recipient_addresses(raw_header_bytes) -> set[str]:
@@ -158,26 +236,35 @@ def classify_deactivate_probe(response) -> str:
     return "ok"
 
 
-def build_flagged_rows(
-    banned_by_account: dict[str, list[dict]], delete_mode: bool
-) -> list[dict]:
+def build_flagged_rows(banned_by_account: dict[str, list[dict]], action) -> list[dict]:
     """Flatten the aliases the run would act on into export rows.
 
-    Mirrors the ``to_process`` selection used by the action loop: in delete mode
-    every banned alias is targeted (inactive ones are deleted directly), otherwise
-    only the still-active ones would be deactivated. Each row is a dict with
-    ``account``/``label``/``alias``/``active`` keys.
+    ``action`` is either a bool (legacy "delete mode" applied uniformly to every
+    account) or a callable mapping a record to its action ("deactivate"/"delete").
+    Mirrors the ``to_process`` selection used by the action loop: an alias slated
+    for deletion is always targeted (inactive ones are deleted directly), while an
+    alias slated for deactivation is targeted only while still active. Each row is
+    a dict with ``account``/``label``/``alias``/``active``/``action`` keys.
     """
+    if callable(action):
+        action_for = action
+    else:
+        delete_mode = bool(action)
+        action_for = lambda _record: "delete" if delete_mode else "deactivate"
+
     rows: list[dict] = []
     for name, banned in banned_by_account.items():
-        targeted = banned if delete_mode else [r for r in banned if r.get("isActive")]
-        for record in targeted:
+        for record in banned:
+            act = action_for(record)
+            if act != "delete" and not record.get("isActive"):
+                continue
             rows.append(
                 {
                     "account": name,
                     "label": str(record.get("label", "")),
                     "alias": str(record.get("hme", "")),
                     "active": bool(record.get("isActive")),
+                    "action": act,
                 }
             )
     return rows
@@ -225,17 +312,55 @@ def export_flagged_aliases(rows: list[dict], path: str, fmt: str = "csv") -> Non
 # --------------------------------------------------------------------------- #
 # Gmail IMAP (blocking — run via asyncio.to_thread)
 # --------------------------------------------------------------------------- #
+def _normalize_gmail_accounts(config: dict) -> list[dict]:
+    """Validate & normalize the ``accounts`` list into scannable inbox dicts.
+
+    Each entry needs an ``address`` and an ``app_password``; ``name`` defaults to
+    the address and ``imap_host`` / ``imap_port`` fall back to the top-level
+    values. Mirrors the multi-account ``accounts.json`` used for iCloud.
+    """
+    host = config.get("imap_host", "imap.gmail.com")
+    port = int(config.get("imap_port", 993))
+    accounts: list[dict] = []
+    for index, item in enumerate(config.get("accounts") or [], start=1):
+        if not isinstance(item, dict):
+            raise ValueError(f"Gmail account #{index} must be a JSON object.")
+        address = str(item.get("address") or "").strip()
+        app_password = item.get("app_password") or ""
+        if not address or not app_password:
+            raise ValueError(
+                f'Gmail account #{index} is missing "address" or "app_password".'
+            )
+        accounts.append(
+            {
+                "name": str(item.get("name") or address).strip(),
+                "address": address,
+                "app_password": app_password,
+                "imap_host": item.get("imap_host", host),
+                "imap_port": int(item.get("imap_port", port)),
+            }
+        )
+    return accounts
+
+
 def load_gmail_config(
     path: str = DEFAULT_GMAIL_CONFIG,
     console: Console | None = None,
     allow_prompt: bool = True,
 ) -> dict:
-    """Load Gmail IMAP settings from ``path``, env vars, or an interactive prompt.
+    """Load Gmail IMAP settings and normalize them into a scannable config.
 
-    Precedence: ``GMAIL_ADDRESS`` / ``GMAIL_APP_PASSWORD`` env vars override the
-    file. If address or app password is still missing and ``allow_prompt`` is set,
-    ask for them (password via ``getpass``, never echoed) and offer to save them to
-    the git-ignored config file with 0600 permissions.
+    Supports either a single Gmail inbox (top-level ``address`` / ``app_password``,
+    optionally overridden by the ``GMAIL_ADDRESS`` / ``GMAIL_APP_PASSWORD`` env
+    vars or an interactive prompt) or several inboxes listed under ``accounts``
+    (each ``{name?, address, app_password, imap_host?, imap_port?}``) — mirroring
+    the multi-account ``accounts.json`` used for iCloud. The returned dict always
+    exposes a normalized ``accounts`` list plus the shared query settings
+    (``text_query`` / ``subject_query`` / ``signals``).
+
+    Passwords are never logged and, in the single-inbox prompt path, saved only to
+    the git-ignored config file with 0600 permissions. Setting the env vars pins a
+    single inbox even when the file lists several.
     """
     config: dict = {}
     if os.path.exists(path):
@@ -247,8 +372,22 @@ def load_gmail_config(
         if not isinstance(config, dict):
             raise ValueError(f'Gmail config "{path}" must be a JSON object.')
 
+    config.setdefault("imap_host", "imap.gmail.com")
+    config.setdefault("imap_port", 993)
+    config.setdefault("text_query", "baa-customer-appeal")
+    config.setdefault("subject_query", "")
+
     env_address = os.environ.get("GMAIL_ADDRESS")
     env_password = os.environ.get("GMAIL_APP_PASSWORD")
+
+    accounts_raw = config.get("accounts")
+    has_accounts_list = isinstance(accounts_raw, list) and bool(accounts_raw)
+
+    # A multi-inbox config wins, unless env vars explicitly pin a single inbox.
+    if has_accounts_list and not (env_address or env_password):
+        config["accounts"] = _normalize_gmail_accounts(config)
+        return config
+
     if env_address:
         config["address"] = env_address
     if env_password:
@@ -258,8 +397,9 @@ def load_gmail_config(
         if not allow_prompt:
             raise ValueError(
                 f'Gmail address / app password not configured. Create "{path}" '
-                f"(see {path.replace('.json', '.example.json')}) or set the "
-                "GMAIL_ADDRESS and GMAIL_APP_PASSWORD environment variables."
+                f"(see {path.replace('.json', '.example.json')}), add an "
+                '"accounts" list, or set the GMAIL_ADDRESS and GMAIL_APP_PASSWORD '
+                "environment variables."
             )
         console = console or Console()
         console.print(
@@ -279,10 +419,15 @@ def load_gmail_config(
             _save_gmail_config(path, config)
             console.print(f'[dim]Saved to "{path}".[/]')
 
-    config.setdefault("imap_host", "imap.gmail.com")
-    config.setdefault("imap_port", 993)
-    config.setdefault("text_query", "baa-customer-appeal")
-    config.setdefault("subject_query", "")
+    config["accounts"] = [
+        {
+            "name": str(config.get("name") or config["address"]).strip(),
+            "address": str(config["address"]).strip(),
+            "app_password": config["app_password"],
+            "imap_host": config.get("imap_host", "imap.gmail.com"),
+            "imap_port": int(config.get("imap_port", 993)),
+        }
+    ]
     return config
 
 
@@ -372,16 +517,24 @@ def _query_description(config: dict) -> str:
     return " ".join(parts) or "ALL"
 
 
-def scan_ban_recipients(config: dict) -> tuple[int, set[str]]:
-    """Search Gmail for Amazon ban emails and return (count, recipient aliases).
+def scan_ban_recipients(
+    gmail_account: dict, signals: list[dict]
+) -> dict[str, tuple[int, set[str]]]:
+    """Scan one Gmail inbox for each ban ``signal``.
 
-    Blocking (imaplib); call from async code via ``asyncio.to_thread``. Selects the
-    mailbox read-only and fetches with ``BODY.PEEK`` so the inbox is never touched.
+    Returns ``{signal_key: (count, recipient_aliases)}``. Blocking (imaplib); call
+    from async code via ``asyncio.to_thread``. Selects the mailbox read-only and
+    fetches with ``BODY.PEEK`` so the inbox is never touched. Runs every signal's
+    search over a single IMAP connection.
     """
-    host = config.get("imap_host", "imap.gmail.com")
-    port = int(config.get("imap_port", 993))
-    address = config["address"]
-    password = config["app_password"]
+    host = gmail_account.get("imap_host", "imap.gmail.com")
+    port = int(gmail_account.get("imap_port", 993))
+    address = gmail_account["address"]
+    password = gmail_account["app_password"]
+
+    results: dict[str, tuple[int, set[str]]] = {
+        signal["key"]: (0, set()) for signal in signals
+    }
 
     imap = imaplib.IMAP4_SSL(host, port)
     try:
@@ -392,20 +545,22 @@ def scan_ban_recipients(config: dict) -> tuple[int, set[str]]:
         if typ != "OK":
             imap.select("INBOX", readonly=True)
 
-        typ, data = imap.search(None, *_build_search_criteria(config))
-        if typ != "OK" or not data or not data[0]:
-            return 0, set()
-
-        ids = data[0].split()
-        recipients: set[str] = set()
-        for num in ids:
-            typ, msg_data = imap.fetch(num, "(BODY.PEEK[HEADER])")
-            if typ != "OK" or not msg_data:
+        for signal in signals:
+            typ, data = imap.search(None, *_build_search_criteria(signal))
+            if typ != "OK" or not data or not data[0]:
                 continue
-            for part in msg_data:
-                if isinstance(part, tuple) and part[1]:
-                    recipients |= extract_recipient_addresses(part[1])
-        return len(ids), recipients
+
+            ids = data[0].split()
+            recipients: set[str] = set()
+            for num in ids:
+                typ, msg_data = imap.fetch(num, "(BODY.PEEK[HEADER])")
+                if typ != "OK" or not msg_data:
+                    continue
+                for part in msg_data:
+                    if isinstance(part, tuple) and part[1]:
+                        recipients |= extract_recipient_addresses(part[1])
+            results[signal["key"]] = (len(ids), recipients)
+        return results
     finally:
         try:
             imap.logout()
@@ -578,6 +733,35 @@ def _write_flagged_export(
     )
 
 
+def _scan_all_inboxes(
+    gmail_accounts: list[dict], signals: list[dict], console: Console
+) -> tuple[dict[str, int], dict[str, set[str]]]:
+    """Scan every Gmail inbox for every signal (blocking) and merge the results.
+
+    Returns ``(counts_by_signal, recipients_by_signal)``. Runs the inboxes
+    sequentially — the per-inbox failures are reported and skipped so one bad
+    mailbox never aborts the whole scan.
+    """
+    counts = {signal["key"]: 0 for signal in signals}
+    recipients: dict[str, set[str]] = {signal["key"]: set() for signal in signals}
+    for account in gmail_accounts:
+        try:
+            result = scan_ban_recipients(account, signals)
+        except imaplib.IMAP4.error as exc:
+            console.log(
+                f"({account['name']}) [bold red]✗ Échec IMAP[/] : {exc}. Vérifie "
+                "le mot de passe d'application Gmail et que l'accès IMAP est activé."
+            )
+            continue
+        except (OSError, ssl.SSLError) as exc:
+            console.log(f"({account['name']}) [bold red]✗ Connexion IMAP impossible[/] : {exc}")
+            continue
+        for key, (count, recips) in result.items():
+            counts[key] += count
+            recipients[key] |= recips
+    return counts, recipients
+
+
 async def run_ban_check(
     accounts_file: str | None = None,
     account_names: list[str] | None = None,
@@ -585,57 +769,76 @@ async def run_ban_check(
     account_name: str | None = None,
     dry_run: bool = False,
     assume_yes: bool = False,
-    action: str = "deactivate",
+    modes: list[str] | None = None,
+    force_delete: bool = False,
     export_path: str | None = None,
     export_format: str = "csv",
     gmail_config_path: str = DEFAULT_GMAIL_CONFIG,
     console: Console | None = None,
 ) -> None:
     console = console or Console()
-    delete_mode = action == "delete"
 
-    # 1) Scan Gmail for Amazon ban emails and extract recipient aliases.
+    # 1) Load the Gmail inbox(es) and the ban signals (modes) to scan for.
     try:
         gmail_config = load_gmail_config(gmail_config_path, console=console)
     except ValueError as exc:
         console.log(f"[bold red][ERR][/] {exc}")
         return
 
-    console.rule("[bold green]Scan des mails de ban Amazon")
-    console.log(
-        f"Connexion IMAP à {gmail_config['imap_host']} "
-        f"({gmail_config['address']})…"
+    gmail_accounts = gmail_config["accounts"]
+    signals = resolve_ban_signals(
+        gmail_config, keys=modes or ["appeal"], force_delete=force_delete
     )
-    console.log(f"[dim]Recherche Gmail : {_query_description(gmail_config)}[/]")
-    try:
-        count, candidates = await asyncio.to_thread(scan_ban_recipients, gmail_config)
-    except imaplib.IMAP4.error as exc:
-        console.log(
-            f"[bold red][ERR][/] Échec IMAP : {exc}. Vérifie le mot de passe "
-            "d'application Gmail et que l'accès IMAP est activé."
-        )
-        return
-    except (OSError, ssl.SSLError) as exc:
-        console.log(f"[bold red][ERR][/] Connexion IMAP impossible : {exc}")
+    if not signals:
+        console.log("[bold red][ERR][/] Aucun mode de scan sélectionné.")
         return
 
-    candidates.discard(gmail_config["address"].lower())
+    console.rule("[bold green]Scan des mails de ban Amazon")
     console.log(
-        f"{count} mail(s) de ban Amazon trouvé(s), "
-        f"{len(candidates)} adresse(s) destinataire(s) extraite(s)."
+        f"{len(gmail_accounts)} boîte(s) Gmail à scanner : "
+        + ", ".join(account["address"] for account in gmail_accounts)
     )
+    for signal in signals:
+        verb = "désactiver + supprimer" if signal["action"] == "delete" else "désactiver"
+        console.log(
+            f"[dim]Mode « {signal['key']} » — {_query_description(signal)} → {verb}[/]"
+        )
+
+    # 2) Scan each inbox for each signal (blocking IMAP, run off the event loop).
+    counts, recipients_by_signal = await asyncio.to_thread(
+        _scan_all_inboxes, gmail_accounts, signals, console
+    )
+
+    # Merge recipients into a single alias→action map (delete wins over deactivate)
+    # and drop the Gmail destination addresses themselves.
+    gmail_addresses = {account["address"].lower() for account in gmail_accounts}
+    candidate_action: dict[str, str] = {}
+    for signal in signals:
+        key = signal["key"]
+        console.log(
+            f"« {key} » : {counts[key]} mail(s) trouvé(s), "
+            f"{len(recipients_by_signal[key])} adresse(s) destinataire(s)."
+        )
+        for address in recipients_by_signal[key]:
+            address = address.lower()
+            if address in gmail_addresses or candidate_action.get(address) == "delete":
+                continue
+            candidate_action[address] = (
+                "delete" if signal["action"] == "delete" else "deactivate"
+            )
+
+    candidates = set(candidate_action)
     if candidates:
         console.print(
-            "[dim]Alias destinataires extraits :[/] "
-            + ", ".join(sorted(candidates))
+            "[dim]Alias destinataires extraits :[/] " + ", ".join(sorted(candidates))
         )
-    if not candidates:
+    else:
         console.log("[green]Aucun alias banni détecté. Rien à faire.[/]")
         if export_path:
             _write_flagged_export([], export_path, export_format, console)
         return
 
-    # 2) List every account's aliases (in parallel) to know who owns what.
+    # 3) List every account's aliases (in parallel) to know who owns what.
     try:
         accounts = _resolve_accounts(
             accounts_file, account_names, cookie_file, account_name
@@ -666,8 +869,12 @@ async def run_ban_check(
         records_by_account[account.name] = records
         console.log(f"({account.name}) {len(records)} alias au total.")
 
-    # 3) Map banned aliases to their accounts and report per account.
+    # 4) Map banned aliases to their accounts and report per account. Each alias
+    #    carries the action of the signal it matched (delete already won ties).
     banned_by_account, orphans = map_banned_to_accounts(candidates, aliases_by_account)
+
+    def action_for(record: dict) -> str:
+        return candidate_action.get((record.get("hme") or "").lower(), "deactivate")
 
     console.rule("[bold green]Alias bannis par compte iCloud")
     if not banned_by_account:
@@ -682,10 +889,19 @@ async def run_ban_check(
         table.add_column("Label")
         table.add_column("Alias")
         table.add_column("État")
+        table.add_column("Action")
         for record in records:
             state = "[green]actif[/]" if record.get("isActive") else "[dim]inactif[/]"
+            action_label = (
+                "[red]désact. + suppr.[/]"
+                if action_for(record) == "delete"
+                else "désact."
+            )
             table.add_row(
-                str(record.get("label", "")), str(record.get("hme", "")), state
+                str(record.get("label", "")),
+                str(record.get("hme", "")),
+                state,
+                action_label,
             )
         console.print(table)
     if orphans:
@@ -697,19 +913,15 @@ async def run_ban_check(
     # Export the flagged aliases (what would be deactivated/deleted) if requested.
     # Built from the mapping so the list is complete regardless of cookie state.
     if export_path:
-        flagged_rows = build_flagged_rows(banned_by_account, delete_mode)
+        flagged_rows = build_flagged_rows(banned_by_account, action_for)
         _write_flagged_export(flagged_rows, export_path, export_format, console)
 
     if not banned_by_account:
         return
 
-    # 4) Per account: probe deactivation capability, then (confirm →) act.
-    action_word = "désactiver/supprimer" if delete_mode else "désactiver"
-    done_label = "Désactivés + supprimés" if delete_mode else "Désactivés"
-    console.rule(
-        "[bold green]Vérification & "
-        + ("désactivation + suppression" if delete_mode else "désactivation")
-    )
+    # 5) Per account: probe deactivation capability, then (confirm →) act, one
+    #    action group ("deactivate"/"delete") at a time.
+    console.rule("[bold green]Vérification & action")
     total_done = total_failed = total_skipped = 0
 
     for name, banned in banned_by_account.items():
@@ -740,62 +952,66 @@ async def run_ban_check(
                     "(sonde ambiguë). On tentera quand même après confirmation.[/]"
                 )
             else:
-                console.log(
-                    f"({name}) [green]✓ Cookies OK pour {action_word}[/] "
-                    f"(test : {method})."
-                )
+                console.log(f"({name}) [green]✓ Cookies OK[/] (test : {method}).")
 
-            # In delete mode every banned alias is processed (inactive ones are
-            # deleted directly); otherwise only the still-active ones need it.
-            if delete_mode:
-                to_process = list(banned)
-            else:
-                to_process = [r for r in banned if r.get("isActive")]
-                already_inactive = len(banned) - len(to_process)
-                if already_inactive:
+            # Process each action group separately so appeal aliases can be
+            # deactivated while on-hold aliases are deactivated + deleted.
+            for group_action in ("deactivate", "delete"):
+                group = [r for r in banned if action_for(r) == group_action]
+                if not group:
+                    continue
+                delete_mode = group_action == "delete"
+
+                # In delete mode every alias is processed (inactive ones deleted
+                # directly); otherwise only the still-active ones need it.
+                if delete_mode:
+                    to_process = list(group)
+                else:
+                    to_process = [r for r in group if r.get("isActive")]
+                    already_inactive = len(group) - len(to_process)
+                    if already_inactive:
+                        console.log(
+                            f"({name}) {already_inactive} alias banni(s) déjà "
+                            "inactif(s) — ignoré(s)."
+                        )
+                        total_skipped += already_inactive
+                if not to_process:
+                    continue
+
+                if dry_run:
+                    verb = "désactivés + supprimés" if delete_mode else "désactivés"
                     console.log(
-                        f"({name}) {already_inactive} alias banni(s) déjà "
-                        "inactif(s) — ignoré(s)."
+                        f"({name}) [cyan]Dry-run[/] : {len(to_process)} alias "
+                        f"seraient {verb} (aucune action réelle)."
                     )
-                    total_skipped += already_inactive
-            if not to_process:
-                console.log(f"({name}) Aucun alias banni à traiter.")
-                continue
+                    continue
 
-            if dry_run:
-                verb = "désactivés + supprimés" if delete_mode else "désactivés"
-                console.log(
-                    f"({name}) [cyan]Dry-run[/] : {len(to_process)} alias seraient "
-                    f"{verb} (aucune action réelle)."
+                if delete_mode:
+                    question = (
+                        f"Désactiver ET SUPPRIMER définitivement (irréversible) les "
+                        f"{len(to_process)} alias banni(s) du compte « {name} » ?"
+                    )
+                else:
+                    question = (
+                        f"Désactiver les {len(to_process)} alias banni(s) actif(s) du "
+                        f"compte « {name} » ?"
+                    )
+                proceed = assume_yes or Confirm.ask(
+                    question, default=False, console=console
                 )
-                continue
+                if not proceed:
+                    console.log(f"({name}) Ignoré (pas de confirmation).")
+                    total_skipped += len(to_process)
+                    continue
 
-            if delete_mode:
-                question = (
-                    f"Désactiver ET SUPPRIMER définitivement (irréversible) les "
-                    f"{len(to_process)} alias banni(s) du compte « {name} » ?"
+                done, failed = await _process_records(
+                    hme, to_process, console, name, group_action
                 )
-            else:
-                question = (
-                    f"Désactiver les {len(to_process)} alias banni(s) actif(s) du "
-                    f"compte « {name} » ?"
-                )
-            proceed = assume_yes or Confirm.ask(
-                question, default=False, console=console
-            )
-            if not proceed:
-                console.log(f"({name}) Ignoré (pas de confirmation).")
-                total_skipped += len(to_process)
-                continue
-
-            done, failed = await _process_records(
-                hme, to_process, console, name, action
-            )
-            total_done += len(done)
-            total_failed += len(failed)
+                total_done += len(done)
+                total_failed += len(failed)
 
     console.rule("[bold green]Résumé")
     console.log(
-        f"[bold]{done_label} : {total_done}  |  "
+        f"[bold]Traités : {total_done}  |  "
         f"Ignorés : {total_skipped}  |  Échecs : {total_failed}[/]"
     )

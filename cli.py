@@ -31,7 +31,7 @@ from main import (
     resolve_effective_limits,
     suggested_duration_hours,
 )
-from banscan import resolve_export_format, run_ban_check
+from banscan import BAN_SIGNAL_KEYS, resolve_export_format, run_ban_check
 import licensing
 
 console = Console()
@@ -204,6 +204,37 @@ def resolve_cli_accounts(account_options, accounts_file):
     if len(selected) == 1:
         return None, None, selected[0].cookie_file, selected[0].name
     return path, names, None, None
+
+
+def resolve_ban_modes(mode_options):
+    """Resolve one or more ``--mode`` options into a list of ban-signal keys.
+
+    Accepts repeated flags or comma-separated values; ``all`` expands to every
+    known signal. Defaults to the ``appeal`` signal (the historical behaviour).
+    Exits with a clear error on an unknown mode.
+    """
+    tokens = [
+        token.strip().lower()
+        for raw in mode_options
+        for token in raw.split(",")
+        if token.strip()
+    ]
+    if not tokens:
+        return ["appeal"]
+
+    keys: list[str] = []
+    for token in tokens:
+        if token in ("all", "tous", "*"):
+            return list(BAN_SIGNAL_KEYS)
+        if token not in BAN_SIGNAL_KEYS:
+            console.print(
+                f'[red]✗ Mode inconnu : "{token}". '
+                f"Modes disponibles : {', '.join(BAN_SIGNAL_KEYS)}, all.[/]"
+            )
+            raise SystemExit(1)
+        if token not in keys:
+            keys.append(token)
+    return keys
 
 
 # --------------------------------------------------------------------------- #
@@ -408,10 +439,33 @@ def interactive_list() -> None:
 def interactive_ban_check() -> None:
     console.rule(f"[bold {ACCENT}]Détection des bans Amazon")
     console.print(
-        "[dim]Cherche les mails Amazon « baa-customer-appeal » dans ta boîte Gmail, "
-        "identifie les alias bannis et le compte iCloud de chacun, puis propose de "
-        "les désactiver (après vérification que les cookies le permettent).[/]\n"
+        "[dim]Cherche dans ta/tes boîte(s) Gmail les mails de ban Amazon, identifie "
+        "les alias concernés et le compte iCloud de chacun, puis propose de les "
+        "désactiver (et éventuellement supprimer) après vérification des cookies.[/]\n"
     )
+
+    # Which ban signal(s) to scan for.
+    mode_table = Table(box=None, show_header=False, padding=(0, 2))
+    mode_table.add_column(justify="center", style=f"bold {ACCENT}")
+    mode_table.add_column(style="bold")
+    mode_table.add_column(style="dim")
+    mode_table.add_row("appeal", "Compte banni", "baa-customer-appeal → désactive")
+    mode_table.add_row(
+        "on-hold",
+        "Compte « on hold »",
+        "« …temporarily on hold » → désactive + supprime",
+    )
+    mode_table.add_row("all", "Les deux", "scanne les deux signaux")
+    console.print(
+        Panel(mode_table, title="[bold]Modes de scan", border_style="cyan", box=box.ROUNDED)
+    )
+    mode_choice = Prompt.ask(
+        "Quels signaux de ban chercher ?",
+        choices=["appeal", "on-hold", "all"],
+        default="appeal",
+        console=console,
+    )
+    modes = list(BAN_SIGNAL_KEYS) if mode_choice == "all" else [mode_choice]
 
     dry_run = Confirm.ask(
         "Mode simulation (dry-run — scan & rapport, aucune action) ?",
@@ -419,21 +473,23 @@ def interactive_ban_check() -> None:
         console=console,
     )
 
-    action = "deactivate"
-    if Confirm.ask(
-        "Supprimer définitivement les alias en plus de les désactiver ? "
-        "(irréversible)",
+    # The "appeal" signal only deactivates by default; offer to also delete. The
+    # "on-hold" signal always deactivates + deletes, so no need to ask for it.
+    force_delete = False
+    if "appeal" in modes and Confirm.ask(
+        "Pour les alias « compte banni », les supprimer définitivement en plus de "
+        "les désactiver ? (irréversible)",
         default=False,
         console=console,
     ):
-        action = "delete"
+        force_delete = True
 
     # In dry-run, offer to export the flagged aliases (those theoretically to
     # deactivate/delete) so they can be reviewed or reused.
     export_path = None
     export_format = "csv"
     if dry_run and Confirm.ask(
-        "Exporter la liste des alias signalés (théoriquement à supprimer) ?",
+        "Exporter la liste des alias signalés (théoriquement à traiter) ?",
         default=False,
         console=console,
     ):
@@ -451,18 +507,21 @@ def interactive_ban_check() -> None:
 
     accounts_file, account_names, cookie_file, account_name = pick_accounts()
 
-    if dry_run:
-        mode = "simulation (dry-run)"
-    elif action == "delete":
-        mode = "désactivation + suppression (irréversible, avec confirmation)"
-    else:
-        mode = "désactivation (avec confirmation)"
+    def mode_action(key: str) -> str:
+        if key == "on-hold" or force_delete:
+            return "désactiver + supprimer"
+        return "désactiver"
+
+    modes_desc = ", ".join(f"{key} → {mode_action(key)}" for key in modes)
+    mode_label = (
+        "simulation (dry-run)" if dry_run else "action (avec confirmation par compte)"
+    )
 
     summary_panel(
         "Review",
         [
-            ("Mode", mode),
-            ("Action", "désactiver + supprimer" if action == "delete" else "désactiver"),
+            ("Mode", mode_label),
+            ("Signaux", modes_desc),
             ("Export", f"{export_path} ({export_format})" if export_path else "—"),
             ("Accounts file", accounts_file or "—"),
             (
@@ -484,7 +543,8 @@ def interactive_ban_check() -> None:
             cookie_file=cookie_file,
             account_name=account_name,
             dry_run=dry_run,
-            action=action,
+            modes=modes,
+            force_delete=force_delete,
             export_path=export_path,
             export_format=export_format,
         )
@@ -706,6 +766,17 @@ def activatecommand(key):
     ),
 )
 @click.option(
+    "--mode",
+    "modes",
+    multiple=True,
+    help=(
+        'Which ban signal(s) to scan for: "appeal" (baa-customer-appeal, '
+        'deactivate), "on-hold" ("…temporarily on hold" subject, deactivate + '
+        'delete), or "all". Repeat the flag or pass a comma-separated list. '
+        "Default: appeal."
+    ),
+)
+@click.option(
     "--dry-run",
     is_flag=True,
     default=False,
@@ -717,8 +788,9 @@ def activatecommand(key):
     is_flag=True,
     default=False,
     help=(
-        "Also permanently DELETE each banned alias (deactivate then delete). "
-        "Irreversible. Without it, aliases are only deactivated."
+        "Force permanent DELETE (deactivate then delete) for every selected "
+        "mode, including appeal. Irreversible. The on-hold mode already deletes "
+        "by default."
     ),
 )
 @click.option(
@@ -745,10 +817,11 @@ def activatecommand(key):
     help="Force the export format (default: inferred from the --export extension).",
 )
 def bancheckcommand(
-    accounts_file, account, dry_run, delete_mode, assume_yes, export_path, export_format
+    accounts_file, account, modes, dry_run, delete_mode, assume_yes, export_path, export_format
 ):
-    "Detect Amazon-ban aliases (baa-customer-appeal) and deactivate/delete them"
+    "Detect Amazon-ban aliases (appeal / on-hold) and deactivate/delete them"
     licensing.require_license(console)
+    ban_modes = resolve_ban_modes(modes)
     # Default to all accounts (accounts.json) so bans map across every phone.
     if not accounts_file and not account and os.path.exists("accounts.json"):
         accounts_file = "accounts.json"
@@ -763,7 +836,8 @@ def bancheckcommand(
             account_name=account_name,
             dry_run=dry_run,
             assume_yes=assume_yes,
-            action="delete" if delete_mode else "deactivate",
+            modes=ban_modes,
+            force_delete=delete_mode,
             export_path=export_path,
             export_format=(
                 resolve_export_format(export_path, export_format)

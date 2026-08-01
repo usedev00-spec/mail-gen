@@ -1,5 +1,6 @@
 import asyncio
 import csv
+import json
 import os
 import sys
 import tempfile
@@ -9,14 +10,18 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from banscan import (
+    BAN_SIGNAL_KEYS,
     _build_search_criteria,
     _process_records,
     build_flagged_rows,
     classify_deactivate_probe,
     export_flagged_aliases,
     extract_recipient_addresses,
+    load_gmail_config,
     map_banned_to_accounts,
+    resolve_ban_signals,
     resolve_export_format,
+    scan_ban_recipients,
 )
 
 
@@ -195,21 +200,21 @@ class BuildFlaggedRowsTest(unittest.TestCase):
         }
 
     def test_deactivate_mode_keeps_only_active_aliases(self):
-        rows = build_flagged_rows(self.banned_by_account, delete_mode=False)
+        rows = build_flagged_rows(self.banned_by_account, False)
         self.assertEqual(
             [(r["account"], r["alias"]) for r in rows],
             [("iPhone1", "a@icloud.com"), ("iPhone2", "c@icloud.com")],
         )
 
     def test_delete_mode_keeps_every_banned_alias(self):
-        rows = build_flagged_rows(self.banned_by_account, delete_mode=True)
+        rows = build_flagged_rows(self.banned_by_account, True)
         self.assertEqual(
             {r["alias"] for r in rows},
             {"a@icloud.com", "b@icloud.com", "c@icloud.com"},
         )
 
     def test_row_carries_label_and_state(self):
-        rows = build_flagged_rows(self.banned_by_account, delete_mode=True)
+        rows = build_flagged_rows(self.banned_by_account, True)
         inactive = next(r for r in rows if r["alias"] == "b@icloud.com")
         self.assertEqual(inactive["label"], "Amazon B")
         self.assertFalse(inactive["active"])
@@ -299,6 +304,187 @@ class ProcessRecordsTest(unittest.TestCase):
         self.assertEqual(len(failed), 1)
         # Deletion must NOT be attempted if deactivation failed.
         self.assertEqual(hme.calls, [("deactivate", "id-a")])
+
+
+class ResolveBanSignalsTest(unittest.TestCase):
+    def test_default_returns_all_signals_in_order(self):
+        self.assertEqual(
+            [s["key"] for s in resolve_ban_signals()], BAN_SIGNAL_KEYS
+        )
+
+    def test_keys_filter_selects_a_subset(self):
+        self.assertEqual(
+            [s["key"] for s in resolve_ban_signals(keys=["on-hold"])], ["on-hold"]
+        )
+
+    def test_appeal_deactivates_and_on_hold_deletes_by_default(self):
+        by_key = {s["key"]: s for s in resolve_ban_signals()}
+        self.assertEqual(by_key["appeal"]["action"], "deactivate")
+        self.assertEqual(by_key["on-hold"]["action"], "delete")
+
+    def test_force_delete_upgrades_every_action(self):
+        signals = resolve_ban_signals(force_delete=True)
+        self.assertTrue(all(s["action"] == "delete" for s in signals))
+
+    def test_legacy_top_level_query_overrides_appeal_only(self):
+        by_key = {
+            s["key"]: s
+            for s in resolve_ban_signals(
+                {"text_query": "custom-token", "subject_query": ""}
+            )
+        }
+        self.assertEqual(by_key["appeal"]["text_query"], "custom-token")
+        # on-hold keeps its own subject-only query, untouched by the legacy fields.
+        self.assertEqual(by_key["on-hold"]["text_query"], "")
+        self.assertTrue(by_key["on-hold"]["subject_query"])
+
+    def test_signals_config_override_tunes_a_single_signal(self):
+        signal = resolve_ban_signals(
+            {"signals": {"on-hold": {"subject_query": "on hold", "action": "deactivate"}}},
+            keys=["on-hold"],
+        )[0]
+        self.assertEqual(signal["subject_query"], "on hold")
+        self.assertEqual(signal["action"], "deactivate")
+
+    def test_on_hold_search_is_subject_only(self):
+        criteria = _build_search_criteria(resolve_ban_signals(keys=["on-hold"])[0])
+        self.assertEqual(criteria[0], "SUBJECT")
+        self.assertNotIn("TEXT", criteria)
+
+
+class LoadGmailConfigTest(unittest.TestCase):
+    def _write(self, payload):
+        fd, path = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        self.addCleanup(os.unlink, path)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+        return path
+
+    def _load(self, payload, env=None):
+        path = self._write(payload)
+        cleared = {"GMAIL_ADDRESS": "", "GMAIL_APP_PASSWORD": ""}
+        with mock.patch.dict(os.environ, {**cleared, **(env or {})}, clear=False):
+            if not env:
+                os.environ.pop("GMAIL_ADDRESS", None)
+                os.environ.pop("GMAIL_APP_PASSWORD", None)
+            return load_gmail_config(path, allow_prompt=False)
+
+    def test_single_account_is_backward_compatible(self):
+        config = self._load({"address": "a@gmail.com", "app_password": "pw"})
+        self.assertEqual(len(config["accounts"]), 1)
+        self.assertEqual(config["accounts"][0]["address"], "a@gmail.com")
+
+    def test_accounts_list_yields_every_inbox(self):
+        config = self._load(
+            {
+                "accounts": [
+                    {"name": "g1", "address": "a@gmail.com", "app_password": "pw1"},
+                    {"address": "b@gmail.com", "app_password": "pw2"},
+                ]
+            }
+        )
+        self.assertEqual(
+            [a["address"] for a in config["accounts"]], ["a@gmail.com", "b@gmail.com"]
+        )
+        # name defaults to the address; imap host/port defaults are applied.
+        self.assertEqual(config["accounts"][1]["name"], "b@gmail.com")
+        self.assertEqual(config["accounts"][0]["imap_host"], "imap.gmail.com")
+        self.assertEqual(config["accounts"][0]["imap_port"], 993)
+
+    def test_account_missing_password_raises(self):
+        with self.assertRaises(ValueError):
+            self._load({"accounts": [{"address": "a@gmail.com"}]})
+
+    def test_env_vars_pin_a_single_inbox(self):
+        config = self._load(
+            {
+                "accounts": [
+                    {"address": "a@gmail.com", "app_password": "pw1"},
+                    {"address": "b@gmail.com", "app_password": "pw2"},
+                ]
+            },
+            env={"GMAIL_ADDRESS": "env@gmail.com", "GMAIL_APP_PASSWORD": "envpw"},
+        )
+        self.assertEqual(len(config["accounts"]), 1)
+        self.assertEqual(config["accounts"][0]["address"], "env@gmail.com")
+
+
+class BuildFlaggedRowsCallableTest(unittest.TestCase):
+    def setUp(self):
+        self.banned_by_account = {
+            "iPhone1": [
+                {"hme": "a@icloud.com", "label": "A", "isActive": True},
+                {"hme": "b@icloud.com", "label": "B", "isActive": False},
+            ]
+        }
+
+    def test_per_record_action_flags_delete_even_when_inactive(self):
+        actions = {"a@icloud.com": "deactivate", "b@icloud.com": "delete"}
+        rows = build_flagged_rows(self.banned_by_account, lambda r: actions[r["hme"]])
+        by_alias = {r["alias"]: r for r in rows}
+        # active + deactivate is flagged; inactive + delete is still flagged.
+        self.assertEqual(set(by_alias), {"a@icloud.com", "b@icloud.com"})
+        self.assertEqual(by_alias["a@icloud.com"]["action"], "deactivate")
+        self.assertEqual(by_alias["b@icloud.com"]["action"], "delete")
+
+    def test_inactive_deactivate_is_not_flagged(self):
+        rows = build_flagged_rows(
+            {"iPhone1": [{"hme": "c@icloud.com", "isActive": False}]},
+            lambda r: "deactivate",
+        )
+        self.assertEqual(rows, [])
+
+
+class _FakeIMAP:
+    """Minimal in-memory IMAP double for scan_ban_recipients."""
+
+    def __init__(self, search_map, headers):
+        self._search_map = search_map
+        self._headers = headers
+        self.logged_out = False
+
+    def login(self, address, password):
+        return ("OK", [b""])
+
+    def list(self):
+        return ("OK", [b'(\\HasNoChildren \\All) "/" "[Gmail]/All Mail"'])
+
+    def select(self, mailbox, readonly=False):
+        return ("OK", [b"1"])
+
+    def search(self, charset, *criteria):
+        ids = self._search_map.get(" ".join(criteria), [])
+        return ("OK", [b" ".join(ids)] if ids else [b""])
+
+    def fetch(self, num, spec):
+        raw = self._headers.get(num)
+        if raw is None:
+            return ("NO", None)
+        return ("OK", [(b"1 (BODY[HEADER] {0}", raw)])
+
+    def logout(self):
+        self.logged_out = True
+        return ("BYE", [b""])
+
+
+class ScanBanRecipientsTest(unittest.TestCase):
+    def test_groups_recipients_per_signal(self):
+        signals = resolve_ban_signals()  # appeal + on-hold
+        appeal_key = " ".join(_build_search_criteria(signals[0]))
+        on_hold_key = " ".join(_build_search_criteria(signals[1]))
+        search_map = {appeal_key: [b"1"], on_hold_key: [b"2"]}
+        headers = {
+            b"1": b"To: appeal.alias@icloud.com\r\nSubject: baa-customer-appeal\r\n\r\n",
+            b"2": b"To: hold.alias@icloud.com\r\nSubject: temporarily on hold\r\n\r\n",
+        }
+        fake = _FakeIMAP(search_map, headers)
+        account = {"address": "dest@gmail.com", "app_password": "pw"}
+        with mock.patch("banscan.imaplib.IMAP4_SSL", return_value=fake):
+            result = scan_ban_recipients(account, signals)
+        self.assertEqual(result["appeal"], (1, {"appeal.alias@icloud.com"}))
+        self.assertEqual(result["on-hold"], (1, {"hold.alias@icloud.com"}))
+        self.assertTrue(fake.logged_out)
 
 
 if __name__ == "__main__":

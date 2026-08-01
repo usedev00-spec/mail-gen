@@ -374,36 +374,52 @@ Quand Amazon suspend un compte lié à un de tes alias, il envoie un mail de sus
 (objet localisé du type « your amazon account is suspended » / « votre compte amazon a
 été suspendu ») contenant un lien d'appel **`baa-customer-appeal`**. L'alias, lui, reste
 actif et continue de rediriger. Cette fonction repère ces alias « bannis » et te propose
-de les désactiver.
+de les désactiver (et éventuellement de les supprimer).
+
+**Deux signaux de ban (« modes ») :**
+
+| Mode | Ce qu'il cherche dans Gmail | Action par défaut |
+| --- | --- | --- |
+| **`appeal`** | le **texte** `baa-customer-appeal` (compte banni) | **désactiver** |
+| **`on-hold`** | l'**objet** « Sign in to resolve: Your Amazon account is temporarily on hold » | **désactiver + supprimer** |
+| **`all`** | les deux à la fois | chacun garde son action |
+
+Tu choisis un mode ou les deux. Quand les deux tournent ensemble, chaque alias reçoit
+l'action de **son** signal (un alias repéré par les deux est **supprimé**, l'action la plus
+forte l'emporte).
 
 **Comment ça marche :**
 
-1. Le script se connecte en **IMAP à ta boîte Gmail** (celle vers laquelle tes alias
-   redirigent) et cherche les mails dont le **texte** contient `baa-customer-appeal` — le
-   marqueur présent dans chaque mail de suspension (Amazon les envoie via le relais iCloud,
-   avec un expéditeur du type `baa-customer-appeal_at_amazon_ca_…@icloud.com`). C'est une
-   ancre fiable et indépendante de la langue, contrairement à l'objet qui est localisé.
-   La boîte est ouverte **en lecture seule** (`BODY.PEEK`) : rien n'est marqué lu ni
-   modifié.
-2. Il t'affiche la **liste des alias** qui ont reçu ce mail.
+1. Le script se connecte en **IMAP à ta/tes boîte(s) Gmail** (celles vers lesquelles tes
+   alias redirigent — voir le multi-comptes plus bas) et cherche, pour chaque mode, les
+   mails correspondants. Pour `appeal` c'est le marqueur `baa-customer-appeal` (présent
+   dans chaque mail de suspension, qu'Amazon relaie via iCloud avec un expéditeur du type
+   `baa-customer-appeal_at_amazon_ca_…@icloud.com`) — une ancre fiable et indépendante de
+   la langue, contrairement à l'objet qui est localisé. Pour `on-hold` c'est l'objet du
+   mail « …temporarily on hold ». La boîte est ouverte **en lecture seule** (`BODY.PEEK`) :
+   rien n'est marqué lu ni modifié.
+2. Il t'affiche la **liste des alias** qui ont reçu ces mails, avec l'action prévue.
 3. Il croise cette liste avec les alias de **chaque compte iCloud** et t'annonce, compte
    par compte, quels alias sont bannis (« compte iCloud X → tels alias »).
-4. Avant toute désactivation, il **vérifie que tes cookies permettent bien de
-   désactiver** (sonde non destructive — il ne touche à aucun alias réel).
+4. Avant toute action, il **vérifie que tes cookies permettent bien de désactiver** (sonde
+   non destructive — il ne touche à aucun alias réel).
 5. Il te **demande confirmation** par compte, puis :
-   - **désactivation** (par défaut) : désactive les alias bannis encore actifs. C'est
-     **réversible** côté iCloud (réactivable).
-   - **désactivation + suppression** (option, drapeau `--delete` ou prompt du menu) :
-     désactive puis **supprime définitivement** l'alias. iCloud n'autorise la suppression
-     que d'un alias désactivé, donc l'ordre désactiver → supprimer est fait
-     automatiquement. ⚠️ **Irréversible.** L'authentification reste la même (tes cookies).
+   - **désactivation** : désactive les alias bannis encore actifs. C'est **réversible**
+     côté iCloud (réactivable).
+   - **désactivation + suppression** : désactive puis **supprime définitivement** l'alias.
+     iCloud n'autorise la suppression que d'un alias désactivé, donc l'ordre désactiver →
+     supprimer est fait automatiquement. ⚠️ **Irréversible.** Le mode `on-hold` fait ça par
+     défaut ; pour `appeal`, ajoute le drapeau `--delete` (ou le prompt du menu).
+     L'authentification reste la même (tes cookies).
 
-**Configuration (une seule fois) — le mot de passe d'application Gmail :**
+**Configuration (une seule fois) — le(s) mot(s) de passe d'application Gmail :**
 
 ```bash
 # copie le modèle puis remplis tes infos (ce fichier n'est jamais poussé sur git)
 cp banscan.example.json banscan.json
 ```
+
+**Une seule boîte Gmail :**
 
 ```json
 {
@@ -416,11 +432,31 @@ cp banscan.example.json banscan.json
 }
 ```
 
-> 🔎 En pratique, seuls `address` et `app_password` te concernent. La recherche cherche le
-> texte **`baa-customer-appeal`** dans tes mails — c'est le marqueur présent dans chaque
-> mail de suspension (Amazon les relaie via iCloud, donc filtrer sur l'expéditeur
-> « amazon » ne marche pas et n'est volontairement pas fait). `subject_query` (vide par
-> défaut) est un filtre optionnel sur l'objet si un jour tu veux affiner.
+**Plusieurs boîtes Gmail (multi-comptes)** — sur le même principe que le `accounts.json`
+des comptes iCloud, liste tes boîtes sous `accounts` et elles seront **toutes scannées**
+(les alias trouvés sont fusionnés puis croisés avec tous tes comptes iCloud) :
+
+```json
+{
+  "imap_host": "imap.gmail.com",
+  "imap_port": 993,
+  "accounts": [
+    { "name": "gmail1", "address": "compte1@gmail.com", "app_password": "abcd efgh ijkl mnop" },
+    { "name": "gmail2", "address": "compte2@gmail.com", "app_password": "qrst uvwx yzab cdef" }
+  ],
+  "text_query": "baa-customer-appeal",
+  "subject_query": ""
+}
+```
+
+> 🔎 En pratique, seuls `address` et `app_password` (par boîte) te concernent. `imap_host`
+> / `imap_port` sont communs (surchargeables par boîte), `name` est facultatif (par défaut
+> l'adresse). Le mode `appeal` cherche le texte **`baa-customer-appeal`** (Amazon relaie
+> via iCloud, donc filtrer sur l'expéditeur « amazon » ne marche pas et n'est
+> volontairement pas fait) ; le mode `on-hold` cherche l'objet « …temporarily on hold ».
+> `text_query` / `subject_query` restent, pour rétro-compatibilité, les réglages du mode
+> `appeal` ; un objet `signals` optionnel permet d'ajuster finement chaque mode
+> (`{"signals": {"on-hold": {"subject_query": "…"}}}`).
 
 > 🔑 **`app_password`** n'est **pas** ton mot de passe Gmail habituel : c'est un
 > **mot de passe d'application** (Compte Google → Sécurité → Validation en 2 étapes →
@@ -431,17 +467,24 @@ cp banscan.example.json banscan.json
 
 **Utilisation :**
 
-Dans le **menu interactif**, choisis **`3`** (Ban check). Par défaut il démarre en
-**mode simulation** (dry-run) et te demande si tu veux aussi supprimer (en plus de
-désactiver). En dry-run, il te propose aussi d'**exporter la liste des alias signalés**
-(ceux théoriquement à désactiver/supprimer) vers un fichier **`.txt`** (un alias par
-ligne) ou **`.csv`** (colonnes Compte, Label, Alias, État), au choix.
+Dans le **menu interactif**, choisis **`3`** (Ban check). Il te demande d'abord **quel(s)
+signal(aux)** chercher (`appeal`, `on-hold`, ou `all`), puis démarre par défaut en **mode
+simulation** (dry-run). Pour le signal `appeal`, il propose aussi de supprimer (en plus de
+désactiver) ; le signal `on-hold` supprime déjà par défaut. En dry-run, il te propose
+d'**exporter la liste des alias signalés** (ceux théoriquement à traiter) vers un fichier
+**`.txt`** (un alias par ligne) ou **`.csv`** (colonnes Compte, Label, Alias, État).
 
-En ligne de commande :
+En ligne de commande (le mode par défaut est `appeal`) :
 
 ```bash
 # scan + rapport uniquement (aucune action), sur tous les comptes du accounts.json
 python3 cli.py bancheck --dry-run
+
+# chercher le signal « compte on hold » (désactive + supprime par défaut)
+python3 cli.py bancheck --mode on-hold --dry-run
+
+# chercher les deux signaux en une passe (appeal → désactive, on-hold → désactive+supprime)
+python3 cli.py bancheck --mode all --dry-run
 
 # dry-run + export de la liste des alias signalés (format déduit de l'extension)
 python3 cli.py bancheck --dry-run --export alias_bannis.csv
@@ -453,20 +496,22 @@ python3 cli.py bancheck --dry-run --export alias_bannis.dat --export-format csv
 python3 cli.py bancheck
 
 # scan puis DÉSACTIVATION + SUPPRESSION définitive (irréversible), confirmation par compte
+# (--delete force la suppression sur TOUS les modes sélectionnés, y compris appeal)
 python3 cli.py bancheck --delete
+python3 cli.py bancheck --mode all --delete
 
 # limiter à certains comptes
 python3 cli.py bancheck --account "iCloud2,iCloud3"
 
 # agir sans confirmation par compte (à utiliser en connaissance de cause)
 python3 cli.py bancheck --yes
-python3 cli.py bancheck --delete --yes
+python3 cli.py bancheck --mode all --yes
 ```
 
-> 📄 **`--export`** liste les alias qui *seraient* traités : en désactivation, seulement
-> les alias bannis encore actifs ; en mode `--delete`, tous les alias bannis. La liste est
-> établie à partir du croisement Gmail ↔ comptes iCloud, donc elle est complète même si
-> les cookies d'un compte sont périmés.
+> 📄 **`--export`** liste les alias qui *seraient* traités : ceux à désactiver ne comptent
+> que s'ils sont encore actifs, ceux à supprimer comptent toujours (les inactifs sont
+> supprimés directement). La liste est établie à partir du croisement Gmail ↔ comptes
+> iCloud, donc elle est complète même si les cookies d'un compte sont périmés.
 
 > ⚠️ Si un compte affiche « Impossible d'agir avec ces cookies », c'est que sa session
 > iCloud est périmée : réexporte des cookies frais (voir
