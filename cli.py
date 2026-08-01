@@ -444,6 +444,18 @@ def interactive_ban_check() -> None:
     ):
         force_delete = True
 
+    # When some alias will be deleted (on-hold, or appeal forced to delete), offer
+    # to also purge their Gmail messages (moved to the Gmail Trash, recoverable).
+    will_delete = force_delete or ("on-hold" in modes)
+    purge_gmail = False
+    if will_delete and Confirm.ask(
+        "Aussi nettoyer Gmail : déplacer vers la corbeille tous les mails reçus sur "
+        "les alias supprimés ? (récupérables ~30 j)",
+        default=False,
+        console=console,
+    ):
+        purge_gmail = True
+
     # In dry-run, offer to export the flagged aliases (those theoretically to
     # deactivate/delete) so they can be reviewed or reused.
     export_path = None
@@ -482,6 +494,7 @@ def interactive_ban_check() -> None:
         [
             ("Mode", mode_label),
             ("Signaux", modes_desc),
+            ("Nettoyage Gmail", "oui (corbeille)" if purge_gmail else "non"),
             ("Export", f"{export_path} ({export_format})" if export_path else "—"),
             ("Accounts file", accounts_file or "—"),
             (
@@ -505,6 +518,7 @@ def interactive_ban_check() -> None:
             dry_run=dry_run,
             modes=modes,
             force_delete=force_delete,
+            purge_gmail=purge_gmail,
             export_path=export_path,
             export_format=export_format,
         )

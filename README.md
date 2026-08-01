@@ -356,6 +356,12 @@ forte l'emporte).
      supprimer est fait automatiquement. ⚠️ **Irréversible.** Le mode `on-hold` fait ça par
      défaut ; pour `appeal`, réponds `y` au prompt « les supprimer définitivement… ? » du menu.
      L'authentification reste la même (tes cookies).
+6. **(Option) Nettoyage Gmail.** Quand un alias est **supprimé**, tu peux aussi demander de
+   **vider Gmail** de tous les mails reçus sur cette adresse : ils sont **déplacés vers la
+   corbeille Gmail** (récupérables ~30 j, puis purgés automatiquement par Gmail). Chaque
+   message est **revérifié** (l'alias doit bien figurer dans ses en-têtes destinataires)
+   avant d'être touché, et un récapitulatif + une confirmation te sont demandés avant. En
+   dry-run, il t'indique seulement combien de mails *seraient* déplacés.
 
 **Configuration (une seule fois) — le(s) mot(s) de passe d'application Gmail :**
 
@@ -424,9 +430,10 @@ Le déroulé du menu (par défaut : mode `appeal`, dry-run, tous les comptes du 
 1. **Quels signaux de ban chercher ?** — `appeal` (défaut), `on-hold`, ou `all` (les deux).
 2. **Mode simulation (dry-run) ?** — `y` par défaut : scan + rapport, aucune action.
 3. Si `appeal` est sélectionné : **les supprimer définitivement en plus de les désactiver ?** — `n` par défaut. (`on-hold` supprime déjà.)
-4. En dry-run : **exporter la liste des alias signalés ?** vers un fichier **`.txt`** (un alias par ligne) ou **`.csv`** (colonnes Compte, Label, Alias, État).
-5. **Quels comptes ?** — comme pour la génération (numéros, `all`, ou `0`).
-6. Un récap s'affiche, puis l'outil scanne, croise Gmail ↔ comptes iCloud, et demande **confirmation par compte** avant d'agir.
+4. Si des alias vont être **supprimés** (`on-hold`, ou `appeal` forcé en suppression) : **aussi nettoyer Gmail ?** — déplace vers la corbeille tous les mails reçus sur les alias supprimés. `n` par défaut.
+5. En dry-run : **exporter la liste des alias signalés ?** vers un fichier **`.txt`** (un alias par ligne) ou **`.csv`** (colonnes Compte, Label, Alias, État).
+6. **Quels comptes ?** — comme pour la génération (numéros, `all`, ou `0`).
+7. Un récap s'affiche, puis l'outil scanne, croise Gmail ↔ comptes iCloud, demande **confirmation par compte** avant d'agir, et (si activé) une **confirmation finale** avant de vider les mails Gmail vers la corbeille.
 
 > 📄 **L'export** liste les alias qui *seraient* traités : ceux à désactiver ne comptent
 > que s'ils sont encore actifs, ceux à supprimer comptent toujours (les inactifs sont

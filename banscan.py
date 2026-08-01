@@ -3,17 +3,21 @@
 Amazon sends a ``baa-customer-appeal`` email to the Hide My Email alias tied to a
 banned account. Those aliases keep forwarding, so this module:
 
-1. Scans a Gmail inbox (over IMAP) that the aliases forward to, for Amazon emails
-   whose subject contains ``baa-customer-appeal``, and extracts the alias each one
-   was addressed to.
+1. Scans one or more Gmail inboxes (over IMAP) that the aliases forward to, for the
+   ban emails of each configured "signal" (``baa-customer-appeal`` and/or the
+   "…temporarily on hold" subject), and extracts the alias each one was addressed to.
 2. Maps each banned alias to the iCloud account (cookie file) that owns it, by
    cross-referencing every account's Hide My Email list.
 3. Checks — with a non-destructive probe — whether the current cookies can actually
-   deactivate an alias, then (after confirmation) deactivates the banned ones.
+   deactivate an alias, then (after confirmation) deactivates or deletes the banned
+   ones.
+4. Optionally (``purge_gmail``), for each alias it deletes, moves every Gmail message
+   addressed to that alias to the Gmail Trash (recoverable ~30 days).
 
-The Gmail mailbox is opened read-only with ``BODY.PEEK`` so nothing is ever marked
-read or otherwise modified. The Gmail app password is never logged and lives only in
-the git-ignored ``banscan.json`` (or the ``GMAIL_*`` env vars).
+The scan opens the mailbox read-only with ``BODY.PEEK`` so nothing is marked read or
+modified; only the optional purge opens it read-write, and only to trash messages
+verified to be addressed to a deleted alias. The Gmail app password is never logged
+and lives only in the git-ignored ``banscan.json`` (or the ``GMAIL_*`` env vars).
 """
 
 import asyncio
@@ -479,6 +483,17 @@ def _find_all_mail_mailbox(imap: imaplib.IMAP4) -> str:
     return "INBOX"
 
 
+def _select_all_mail(imap: imaplib.IMAP4, readonly: bool = True) -> str:
+    """Select Gmail "All Mail" (falling back to INBOX). ``readonly`` opens it with
+    ``BODY.PEEK`` semantics; pass ``False`` when messages will be modified/trashed.
+    """
+    mailbox = _find_all_mail_mailbox(imap)
+    typ, _ = imap.select(_quote_mailbox(mailbox), readonly=readonly)
+    if typ != "OK":
+        imap.select("INBOX", readonly=readonly)
+    return mailbox
+
+
 def _build_search_criteria(config: dict) -> list[str]:
     """IMAP SEARCH criteria (implicitly ANDed) built from the config.
 
@@ -540,11 +555,7 @@ def scan_ban_recipients(
     imap = imaplib.IMAP4_SSL(host, port)
     try:
         imap.login(address, password)
-
-        mailbox = _find_all_mail_mailbox(imap)
-        typ, _ = imap.select(_quote_mailbox(mailbox), readonly=True)
-        if typ != "OK":
-            imap.select("INBOX", readonly=True)
+        _select_all_mail(imap, readonly=True)
 
         for signal in signals:
             typ, data = imap.search(None, *_build_search_criteria(signal))
@@ -562,6 +573,122 @@ def scan_ban_recipients(
                         recipients |= extract_recipient_addresses(part[1])
             results[signal["key"]] = (len(ids), recipients)
         return results
+    finally:
+        try:
+            imap.logout()
+        except (imaplib.IMAP4.error, OSError):
+            pass
+
+
+# --------------------------------------------------------------------------- #
+# Gmail message purge (for aliases being deleted) — blocking IMAP
+# --------------------------------------------------------------------------- #
+def _alias_search_criteria(alias: str) -> list[tuple]:
+    """UID SEARCH criteria to surface messages addressed to ``alias``.
+
+    Broad on purpose (recall over precision) — the caller re-verifies every hit
+    against the message headers before acting. ``X-GM-RAW`` is Gmail's full-text
+    search (covers the alias in headers, incl. Delivered-To / Received-for) and
+    ``TO`` / ``HEADER Delivered-To`` are portable fallbacks; results are unioned.
+    """
+    quoted = _imap_quote(alias)
+    return [
+        ("X-GM-RAW", _imap_quote(f"to:{alias} OR cc:{alias} OR bcc:{alias} OR deliveredto:{alias}")),
+        ("X-GM-RAW", quoted),
+        ("TO", quoted),
+        ("HEADER", "Delivered-To", quoted),
+    ]
+
+
+def find_alias_message_uids(imap: imaplib.IMAP4, alias: str) -> list[bytes]:
+    """UIDs of messages **verified** to be addressed to ``alias``.
+
+    A loose union search collects candidates; each is then re-fetched and kept
+    only if ``alias`` is among its recipient addresses (same header logic used to
+    detect bans). This guarantees an over-broad search never trashes mail that
+    only mentions the alias in its body.
+    """
+    alias = alias.lower()
+    candidates: set[bytes] = set()
+    for criteria in _alias_search_criteria(alias):
+        try:
+            typ, data = imap.uid("SEARCH", *criteria)
+        except imaplib.IMAP4.error:
+            continue
+        if typ == "OK" and data and data[0]:
+            candidates.update(data[0].split())
+
+    verified: list[bytes] = []
+    for uid in sorted(candidates):
+        typ, msg_data = imap.uid("FETCH", uid, "(BODY.PEEK[HEADER])")
+        if typ != "OK" or not msg_data:
+            continue
+        for part in msg_data:
+            if isinstance(part, tuple) and part[1]:
+                if alias in extract_recipient_addresses(part[1]):
+                    verified.append(uid)
+                break
+    return verified
+
+
+def _trash_uids(imap: imaplib.IMAP4, uids: list[bytes]) -> int:
+    """Move ``uids`` to Gmail Trash (recoverable ~30 days). Returns count moved.
+
+    Applying the ``\\Trash`` Gmail label removes the message from All Mail/Inbox
+    and drops it in Trash — Gmail's own "delete" behaviour.
+    """
+    if not uids:
+        return 0
+    uid_set = ",".join(u.decode() if isinstance(u, bytes) else str(u) for u in uids)
+    typ, _ = imap.uid("STORE", uid_set, "+X-GM-LABELS", "(\\Trash)")
+    return len(uids) if typ == "OK" else 0
+
+
+def find_account_messages(gmail_account: dict, aliases: set[str]) -> list[bytes]:
+    """Read-only: UIDs in one inbox addressed to any of ``aliases``.
+
+    Blocking (imaplib); call via ``asyncio.to_thread``. Opens the mailbox
+    read-only so nothing is modified — pair with ``trash_account_messages`` to act.
+    """
+    aliases = {a.lower() for a in aliases}
+    if not aliases:
+        return []
+
+    imap = imaplib.IMAP4_SSL(
+        gmail_account.get("imap_host", "imap.gmail.com"),
+        int(gmail_account.get("imap_port", 993)),
+    )
+    uids: set[bytes] = set()
+    try:
+        imap.login(gmail_account["address"], gmail_account["app_password"])
+        _select_all_mail(imap, readonly=True)
+        for alias in aliases:
+            uids.update(find_alias_message_uids(imap, alias))
+        return sorted(uids)
+    finally:
+        try:
+            imap.logout()
+        except (imaplib.IMAP4.error, OSError):
+            pass
+
+
+def trash_account_messages(gmail_account: dict, uids: list[bytes]) -> int:
+    """Read-write: move the given ``uids`` to Trash in one inbox. Returns count.
+
+    Blocking (imaplib); call via ``asyncio.to_thread``. UIDs are stable between
+    the read-only find and this call (barring a UIDVALIDITY change), so the two
+    steps can run over separate connections around a confirmation prompt.
+    """
+    if not uids:
+        return 0
+    imap = imaplib.IMAP4_SSL(
+        gmail_account.get("imap_host", "imap.gmail.com"),
+        int(gmail_account.get("imap_port", 993)),
+    )
+    try:
+        imap.login(gmail_account["address"], gmail_account["app_password"])
+        _select_all_mail(imap, readonly=False)
+        return _trash_uids(imap, uids)
     finally:
         try:
             imap.logout()
@@ -763,6 +890,84 @@ def _scan_all_inboxes(
     return counts, recipients
 
 
+async def _run_gmail_purge(
+    gmail_accounts: list[dict],
+    aliases: set[str],
+    dry_run: bool,
+    assume_yes: bool,
+    console: Console,
+) -> None:
+    """Move to Gmail Trash every message addressed to one of ``aliases``.
+
+    Runs after the alias deletions. Finds matching messages read-only across all
+    inboxes first (verified against headers), reports/asks confirmation, then
+    trashes them. In ``dry_run`` it only reports what would be trashed.
+    """
+    console.rule("[bold #45768c]Nettoyage Gmail des alias supprimés")
+    if not aliases:
+        console.log("Aucun alias supprimé — rien à nettoyer côté Gmail.")
+        return
+
+    # Pass A — find matching messages (read-only) across every inbox.
+    found = await asyncio.gather(
+        *(
+            asyncio.to_thread(find_account_messages, account, aliases)
+            for account in gmail_accounts
+        ),
+        return_exceptions=True,
+    )
+    uids_by_account: list[tuple[dict, list[bytes]]] = []
+    total = 0
+    for account, result in zip(gmail_accounts, found):
+        if isinstance(result, Exception):
+            console.log(
+                f"({account['name']}) [yellow]⚠ recherche Gmail impossible : {result}[/]"
+            )
+            continue
+        if result:
+            uids_by_account.append((account, result))
+            total += len(result)
+            console.log(
+                f"({account['name']}) {len(result)} mail(s) adressé(s) aux alias supprimés."
+            )
+
+    if total == 0:
+        console.log("[#45768c]Aucun mail à nettoyer pour ces alias.[/]")
+        return
+
+    if dry_run:
+        console.log(
+            f"[#45768c]Dry-run[/] : {total} mail(s) seraient déplacés vers la "
+            "corbeille Gmail (aucune action)."
+        )
+        return
+
+    if not (
+        assume_yes
+        or Confirm.ask(
+            f"Déplacer {total} mail(s) vers la corbeille Gmail "
+            "(récupérables ~30 j) ?",
+            default=False,
+            console=console,
+        )
+    ):
+        console.log("Nettoyage Gmail ignoré (pas de confirmation).")
+        return
+
+    # Pass B — trash the found messages (read-write).
+    trashed = await asyncio.gather(
+        *(
+            asyncio.to_thread(trash_account_messages, account, uids)
+            for account, uids in uids_by_account
+        ),
+        return_exceptions=True,
+    )
+    total_trashed = sum(count for count in trashed if isinstance(count, int))
+    console.log(
+        f"[#45768c]★ {total_trashed} mail(s) déplacé(s) vers la corbeille Gmail.[/]"
+    )
+
+
 async def run_ban_check(
     accounts_file: str | None = None,
     account_names: list[str] | None = None,
@@ -772,6 +977,7 @@ async def run_ban_check(
     assume_yes: bool = False,
     modes: list[str] | None = None,
     force_delete: bool = False,
+    purge_gmail: bool = False,
     export_path: str | None = None,
     export_format: str = "csv",
     gmail_config_path: str = DEFAULT_GMAIL_CONFIG,
@@ -924,6 +1130,9 @@ async def run_ban_check(
     #    action group ("deactivate"/"delete") at a time.
     console.rule("[bold #45768c]Vérification & action")
     total_done = total_failed = total_skipped = 0
+    # Aliases actually deleted (or, in dry-run, that would be) — used to purge
+    # their Gmail messages when purge_gmail is on.
+    deleted_aliases: set[str] = set()
 
     for name, banned in banned_by_account.items():
         account = accounts_by_name[name]
@@ -985,6 +1194,10 @@ async def run_ban_check(
                         f"({name}) [#45768c]Dry-run[/] : {len(to_process)} alias "
                         f"seraient {verb} (aucune action réelle)."
                     )
+                    if delete_mode:
+                        deleted_aliases.update(
+                            (r.get("hme") or "").lower() for r in to_process
+                        )
                     continue
 
                 if delete_mode:
@@ -1010,9 +1223,17 @@ async def run_ban_check(
                 )
                 total_done += len(done)
                 total_failed += len(failed)
+                if delete_mode:
+                    deleted_aliases.update(alias.lower() for alias in done)
 
     console.rule("[bold #45768c]Résumé")
     console.log(
         f"[bold]Traités : {total_done}  |  "
         f"Ignorés : {total_skipped}  |  Échecs : {total_failed}[/]"
     )
+
+    # 6) Optionally purge the Gmail messages of the aliases we deleted.
+    if purge_gmail:
+        await _run_gmail_purge(
+            gmail_accounts, deleted_aliases, dry_run, assume_yes, console
+        )

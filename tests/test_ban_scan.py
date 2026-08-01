@@ -13,15 +13,19 @@ from banscan import (
     BAN_SIGNAL_KEYS,
     _build_search_criteria,
     _process_records,
+    _trash_uids,
     build_flagged_rows,
     classify_deactivate_probe,
     export_flagged_aliases,
     extract_recipient_addresses,
+    find_account_messages,
+    find_alias_message_uids,
     load_gmail_config,
     map_banned_to_accounts,
     resolve_ban_signals,
     resolve_export_format,
     scan_ban_recipients,
+    trash_account_messages,
 )
 
 
@@ -485,6 +489,111 @@ class ScanBanRecipientsTest(unittest.TestCase):
         self.assertEqual(result["appeal"], (1, {"appeal.alias@icloud.com"}))
         self.assertEqual(result["on-hold"], (1, {"hold.alias@icloud.com"}))
         self.assertTrue(fake.logged_out)
+
+
+class _FakeUidIMAP:
+    """In-memory IMAP double supporting the UID SEARCH/FETCH/STORE purge path."""
+
+    def __init__(self, search_uids, headers):
+        self.search_uids = list(search_uids)
+        self.headers = dict(headers)
+        self.stored = []          # (uid_set, flag_key, flag_value)
+        self.readonly = None
+        self.logged_out = False
+
+    def login(self, address, password):
+        return ("OK", [b""])
+
+    def list(self):
+        return ("OK", [b'(\\HasNoChildren \\All) "/" "[Gmail]/All Mail"'])
+
+    def select(self, mailbox, readonly=False):
+        self.readonly = readonly
+        return ("OK", [b"1"])
+
+    def uid(self, command, *args):
+        command = command.upper()
+        if command == "SEARCH":
+            return ("OK", [b" ".join(self.search_uids)] if self.search_uids else [b""])
+        if command == "FETCH":
+            uid = args[0]
+            uid = uid.encode() if isinstance(uid, str) else uid
+            raw = self.headers.get(uid)
+            if raw is None:
+                return ("NO", None)
+            return ("OK", [(b"1 (BODY[HEADER] {0}", raw)])
+        if command == "STORE":
+            self.stored.append((args[0], args[1], args[2]))
+            return ("OK", [b""])
+        return ("NO", None)
+
+    def logout(self):
+        self.logged_out = True
+        return ("BYE", [b""])
+
+
+class FindAliasMessageUidsTest(unittest.TestCase):
+    def test_only_verified_recipients_are_returned(self):
+        headers = {
+            b"1": b"To: target@icloud.com\r\nSubject: x\r\n\r\n",
+            b"2": b"To: other@icloud.com\r\nSubject: y\r\n\r\n",
+            b"3": (
+                b"Delivered-To: dest@gmail.com\r\n"
+                b"Received: by mx for <target@icloud.com>;\r\n\r\n"
+            ),
+        }
+        fake = _FakeUidIMAP([b"1", b"2", b"3"], headers)
+        # uid 1 (To) and uid 3 (Received-for) are addressed to the alias; uid 2,
+        # for a different alias, must be filtered out despite matching the search.
+        self.assertEqual(
+            find_alias_message_uids(fake, "target@icloud.com"), [b"1", b"3"]
+        )
+
+
+class TrashUidsTest(unittest.TestCase):
+    def test_stores_gmail_trash_label_for_all_uids(self):
+        fake = _FakeUidIMAP([], {})
+        self.assertEqual(_trash_uids(fake, [b"1", b"5", b"9"]), 3)
+        self.assertEqual(len(fake.stored), 1)
+        uid_set, flag_key, flag_value = fake.stored[0]
+        self.assertEqual(uid_set, "1,5,9")
+        self.assertEqual(flag_key, "+X-GM-LABELS")
+        self.assertIn("Trash", flag_value)
+
+    def test_empty_is_a_noop(self):
+        fake = _FakeUidIMAP([], {})
+        self.assertEqual(_trash_uids(fake, []), 0)
+        self.assertEqual(fake.stored, [])
+
+
+class PurgeAccountTest(unittest.TestCase):
+    def test_find_account_messages_is_read_only_and_verified(self):
+        headers = {
+            b"1": b"To: target@icloud.com\r\n\r\n",
+            b"2": b"To: someone.else@icloud.com\r\n\r\n",
+        }
+        fake = _FakeUidIMAP([b"1", b"2"], headers)
+        account = {"address": "g@gmail.com", "app_password": "pw"}
+        with mock.patch("banscan.imaplib.IMAP4_SSL", return_value=fake):
+            uids = find_account_messages(account, {"target@icloud.com"})
+        self.assertEqual(uids, [b"1"])
+        self.assertTrue(fake.readonly)          # opened read-only
+        self.assertEqual(fake.stored, [])       # nothing modified
+        self.assertTrue(fake.logged_out)
+
+    def test_trash_account_messages_opens_read_write_and_trashes(self):
+        fake = _FakeUidIMAP([], {})
+        account = {"address": "g@gmail.com", "app_password": "pw"}
+        with mock.patch("banscan.imaplib.IMAP4_SSL", return_value=fake):
+            trashed = trash_account_messages(account, [b"1", b"2"])
+        self.assertEqual(trashed, 2)
+        self.assertFalse(fake.readonly)         # opened read-write to act
+        self.assertEqual(fake.stored[0][0], "1,2")
+
+    def test_no_aliases_short_circuits_without_connecting(self):
+        with mock.patch("banscan.imaplib.IMAP4_SSL") as ctor:
+            self.assertEqual(find_account_messages({"address": "g", "app_password": "p"}, set()), [])
+        ctor.assert_not_called()
 
 
 if __name__ == "__main__":
