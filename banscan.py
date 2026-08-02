@@ -70,6 +70,14 @@ _RECIPIENT_HEADERS = (
 # reliably shows up on forwarded mail.
 _RECEIVED_FOR_RE = re.compile(r"for\s+<?([^\s<>;]+@[^\s<>;]+)>?", re.IGNORECASE)
 
+# Loose email matcher used to pull alias addresses out of a .txt/.csv delete list.
+_EMAIL_RE = re.compile(r"[^\s,;<>@\"']+@[^\s,;<>@\"']+\.[^\s,;<>@\"']+")
+
+# CSV header names (lower-cased) that identify the alias column in a delete list.
+_ALIAS_COLUMN_NAMES = frozenset(
+    {"alias", "aliases", "email", "e-mail", "emails", "hme", "hide my email", "adresse", "mail"}
+)
+
 
 # --------------------------------------------------------------------------- #
 # Ban signals (scan "modes")
@@ -968,6 +976,345 @@ async def _run_gmail_purge(
     )
 
 
+async def _act_on_alias_targets(
+    candidate_action: dict[str, str],
+    accounts: list[AccountConfig],
+    gmail_accounts: list[dict],
+    dry_run: bool = False,
+    assume_yes: bool = False,
+    purge_gmail: bool = False,
+    export_path: str | None = None,
+    export_format: str = "csv",
+    console: Console | None = None,
+    noun: str = "banni",
+    targets_title: str = "Alias bannis par compte iCloud",
+) -> None:
+    """List each account's aliases, map the targeted addresses to their owners,
+    then (confirm →) deactivate/delete them and optionally purge their Gmail mail.
+
+    Shared by the ban check and the delete-from-list flow. ``candidate_action``
+    maps ``alias_lower -> "deactivate" | "delete"`` (delete already won any ties);
+    ``noun`` / ``targets_title`` only tweak the wording (banned vs. targeted).
+    """
+    console = console or Console(style=TEXT_COLOR)
+    candidates = set(candidate_action)
+
+    # List every account's aliases (in parallel) to know who owns what.
+    console.rule("[bold #45768c]Comptes iCloud")
+    results = await asyncio.gather(
+        *(_fetch_account_records(account, console) for account in accounts)
+    )
+
+    accounts_by_name: dict[str, AccountConfig] = {}
+    aliases_by_account: dict[str, dict[str, dict]] = {}
+    records_by_account: dict[str, list[dict]] = {}
+    for account, records, error in results:
+        accounts_by_name[account.name] = account
+        if error:
+            console.log(f"({account.name}) [yellow]⚠ liste indisponible : {error}[/]")
+            continue
+        alias_map = {
+            (record.get("hme") or "").lower(): record
+            for record in records
+            if record.get("hme")
+        }
+        aliases_by_account[account.name] = alias_map
+        records_by_account[account.name] = records
+        console.log(f"({account.name}) {len(records)} alias au total.")
+
+    # Map targeted aliases to their accounts and report per account.
+    targeted_by_account, orphans = map_banned_to_accounts(candidates, aliases_by_account)
+
+    def action_for(record: dict) -> str:
+        return candidate_action.get((record.get("hme") or "").lower(), "deactivate")
+
+    console.rule(f"[bold #45768c]{targets_title}")
+    if not targeted_by_account:
+        console.log(
+            f"[#45768c]Aucun des alias {noun}s ne correspond à un compte iCloud "
+            "configuré.[/]"
+        )
+    for name, records in targeted_by_account.items():
+        table = Table(
+            title=f"Compte iCloud « {name} » — {len(records)} alias {noun}(s)"
+        )
+        table.add_column("Label")
+        table.add_column("Alias")
+        table.add_column("État")
+        table.add_column("Action")
+        for record in records:
+            state = "[#45768c]actif[/]" if record.get("isActive") else "[dim]inactif[/]"
+            action_label = (
+                "[red]désact. + suppr.[/]"
+                if action_for(record) == "delete"
+                else "désact."
+            )
+            table.add_row(
+                str(record.get("label", "")),
+                str(record.get("hme", "")),
+                state,
+                action_label,
+            )
+        console.print(table)
+    if orphans:
+        console.log(
+            f"[yellow]{len(orphans)} adresse(s) sans compte iCloud configuré "
+            f"(ignorée(s)) : {', '.join(sorted(orphans))}[/]"
+        )
+
+    # Export the flagged aliases (what would be deactivated/deleted) if requested.
+    # Built from the mapping so the list is complete regardless of cookie state.
+    if export_path:
+        flagged_rows = build_flagged_rows(targeted_by_account, action_for)
+        _write_flagged_export(flagged_rows, export_path, export_format, console)
+
+    if not targeted_by_account:
+        return
+
+    # Per account: probe deactivation capability, then (confirm →) act, one action
+    # group ("deactivate"/"delete") at a time.
+    console.rule("[bold #45768c]Vérification & action")
+    total_done = total_failed = total_skipped = 0
+    # Aliases actually deleted (or, in dry-run, that would be) — used to purge
+    # their Gmail messages when purge_gmail is on.
+    deleted_aliases: set[str] = set()
+
+    for name, targeted in targeted_by_account.items():
+        account = accounts_by_name[name]
+        async with RichHideMyEmail(
+            cookie_file=account.cookie_file,
+            account_name=account.name,
+            console=console,
+        ) as hme:
+            if not hme._ensure_cookie_configured():
+                total_skipped += len(targeted)
+                continue
+
+            verdict, method = await probe_account_deactivation(
+                hme, records_by_account.get(name, [])
+            )
+            if verdict == "unauthorized":
+                console.log(
+                    f"({name}) [bold red]✗ Impossible d'agir avec ces cookies[/] "
+                    "(session iCloud périmée). Réexporte des cookies frais depuis "
+                    "icloud.com/settings puis relance."
+                )
+                total_skipped += len(targeted)
+                continue
+            if verdict == "unknown":
+                console.log(
+                    f"({name}) [yellow]⚠ Capacité de désactivation non confirmée "
+                    "(sonde ambiguë). On tentera quand même après confirmation.[/]"
+                )
+            else:
+                console.log(f"({name}) [#45768c]✓ Cookies OK[/] (test : {method}).")
+
+            # Process each action group separately so, in a ban run, appeal aliases
+            # can be deactivated while on-hold aliases are deactivated + deleted.
+            for group_action in ("deactivate", "delete"):
+                group = [r for r in targeted if action_for(r) == group_action]
+                if not group:
+                    continue
+                delete_mode = group_action == "delete"
+
+                # In delete mode every alias is processed (inactive ones deleted
+                # directly); otherwise only the still-active ones need it.
+                if delete_mode:
+                    to_process = list(group)
+                else:
+                    to_process = [r for r in group if r.get("isActive")]
+                    already_inactive = len(group) - len(to_process)
+                    if already_inactive:
+                        console.log(
+                            f"({name}) {already_inactive} alias {noun}(s) déjà "
+                            "inactif(s) — ignoré(s)."
+                        )
+                        total_skipped += already_inactive
+                if not to_process:
+                    continue
+
+                if dry_run:
+                    verb = "désactivés + supprimés" if delete_mode else "désactivés"
+                    console.log(
+                        f"({name}) [#45768c]Dry-run[/] : {len(to_process)} alias "
+                        f"seraient {verb} (aucune action réelle)."
+                    )
+                    if delete_mode:
+                        deleted_aliases.update(
+                            (r.get("hme") or "").lower() for r in to_process
+                        )
+                    continue
+
+                if delete_mode:
+                    question = (
+                        f"Désactiver ET SUPPRIMER définitivement (irréversible) les "
+                        f"{len(to_process)} alias {noun}(s) du compte « {name} » ?"
+                    )
+                else:
+                    question = (
+                        f"Désactiver les {len(to_process)} alias {noun}(s) actif(s) du "
+                        f"compte « {name} » ?"
+                    )
+                proceed = assume_yes or Confirm.ask(
+                    question, default=False, console=console
+                )
+                if not proceed:
+                    console.log(f"({name}) Ignoré (pas de confirmation).")
+                    total_skipped += len(to_process)
+                    continue
+
+                done, failed = await _process_records(
+                    hme, to_process, console, name, group_action
+                )
+                total_done += len(done)
+                total_failed += len(failed)
+                if delete_mode:
+                    deleted_aliases.update(alias.lower() for alias in done)
+
+    console.rule("[bold #45768c]Résumé")
+    console.log(
+        f"[bold]Traités : {total_done}  |  "
+        f"Ignorés : {total_skipped}  |  Échecs : {total_failed}[/]"
+    )
+
+    # Optionally purge the Gmail messages of the aliases we deleted.
+    if purge_gmail:
+        await _run_gmail_purge(
+            gmail_accounts, deleted_aliases, dry_run, assume_yes, console
+        )
+
+
+def load_alias_list(path: str) -> list[str]:
+    """Read alias addresses to delete from a ``.txt`` or ``.csv`` file.
+
+    - ``.txt``: one address per line (blank lines and ``#`` comments ignored).
+    - ``.csv``: the alias column is picked by header name (``alias`` / ``email`` /
+      ``hme`` / ``hide my email`` / ``adresse`` / ``mail``); with no recognizable
+      header, the first email-looking cell of each row is used.
+
+    Any cell that isn't an email address is skipped, so the tool's own exports
+    (ban ``--export`` CSV/TXT, the list ``--export`` CSV, a bare list, a leading
+    BOM…) can all be fed back in. Returns unique, lower-cased addresses in order.
+    """
+    if not os.path.exists(path):
+        raise ValueError(f'Fichier introuvable : "{path}".')
+
+    seen: set[str] = set()
+    aliases: list[str] = []
+
+    def _add(cell: str | None) -> None:
+        match = _EMAIL_RE.search(cell or "")
+        if not match:
+            return
+        address = match.group(0).lower().strip(".,;")
+        if address and address not in seen:
+            seen.add(address)
+            aliases.append(address)
+
+    try:
+        if path.lower().endswith(".csv"):
+            with open(path, newline="", encoding="utf-8-sig") as f:
+                rows = list(csv.reader(f))
+            if rows:
+                header = [cell.strip().lower() for cell in rows[0]]
+                alias_col = next(
+                    (i for i, name in enumerate(header) if name in _ALIAS_COLUMN_NAMES),
+                    None,
+                )
+                for row in rows[1:] if alias_col is not None else rows:
+                    if alias_col is not None and alias_col < len(row):
+                        _add(row[alias_col])
+                    else:
+                        for cell in row:
+                            if _EMAIL_RE.search(cell or ""):
+                                _add(cell)
+                                break
+        else:
+            with open(path, encoding="utf-8-sig") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#"):
+                        _add(line)
+    except OSError as exc:
+        raise ValueError(f'Lecture impossible de "{path}" : {exc}') from exc
+
+    return aliases
+
+
+async def run_delete_list(
+    input_path: str,
+    accounts_file: str | None = None,
+    account_names: list[str] | None = None,
+    cookie_file: str | None = None,
+    account_name: str | None = None,
+    dry_run: bool = False,
+    assume_yes: bool = False,
+    purge_gmail: bool = False,
+    gmail_config_path: str = DEFAULT_GMAIL_CONFIG,
+    console: Console | None = None,
+) -> None:
+    """Deactivate + delete the aliases listed in ``input_path`` (.txt/.csv).
+
+    Each listed address is mapped to the iCloud account that owns it and deleted
+    (deactivate → delete), with the same per-account confirmation, dry-run and
+    optional Gmail purge as the ban check.
+    """
+    console = console or Console(style=TEXT_COLOR)
+
+    console.rule("[bold #45768c]Suppression d'alias depuis un fichier")
+    try:
+        aliases = load_alias_list(input_path)
+    except ValueError as exc:
+        console.log(f"[bold red][ERR][/] {exc}")
+        return
+
+    console.log(f"{len(aliases)} alias chargé(s) depuis « {input_path} ».")
+    if not aliases:
+        console.log(
+            "[yellow]Aucune adresse d'alias valide trouvée dans le fichier. "
+            "Rien à faire.[/]"
+        )
+        return
+    console.print("[dim]Alias à supprimer :[/] " + ", ".join(sorted(aliases)))
+
+    candidate_action = {alias: "delete" for alias in aliases}
+
+    try:
+        accounts = _resolve_accounts(
+            accounts_file, account_names, cookie_file, account_name
+        )
+    except ValueError as exc:
+        console.log(f"[bold red][ERR][/] {exc}")
+        return
+
+    # Gmail inboxes are only needed for the optional purge.
+    gmail_accounts: list[dict] = []
+    if purge_gmail:
+        try:
+            gmail_accounts = load_gmail_config(gmail_config_path, console=console)[
+                "accounts"
+            ]
+        except ValueError as exc:
+            console.log(
+                f"[yellow]⚠ Nettoyage Gmail indisponible ({exc}). On continue sans.[/]"
+            )
+            purge_gmail = False
+
+    await _act_on_alias_targets(
+        candidate_action,
+        accounts,
+        gmail_accounts,
+        dry_run=dry_run,
+        assume_yes=assume_yes,
+        purge_gmail=purge_gmail,
+        export_path=None,
+        export_format="csv",
+        console=console,
+        noun="ciblé",
+        targets_title="Alias à supprimer par compte iCloud",
+    )
+
+
 async def run_ban_check(
     accounts_file: str | None = None,
     account_names: list[str] | None = None,
@@ -1045,7 +1392,8 @@ async def run_ban_check(
             _write_flagged_export([], export_path, export_format, console)
         return
 
-    # 3) List every account's aliases (in parallel) to know who owns what.
+    # 3) Resolve the iCloud accounts, then act on the banned aliases (map → probe
+    #    → confirm → deactivate/delete → optional Gmail purge).
     try:
         accounts = _resolve_accounts(
             accounts_file, account_names, cookie_file, account_name
@@ -1054,186 +1402,16 @@ async def run_ban_check(
         console.log(f"[bold red][ERR][/] {exc}")
         return
 
-    console.rule("[bold #45768c]Comptes iCloud")
-    results = await asyncio.gather(
-        *(_fetch_account_records(account, console) for account in accounts)
+    await _act_on_alias_targets(
+        candidate_action,
+        accounts,
+        gmail_accounts,
+        dry_run=dry_run,
+        assume_yes=assume_yes,
+        purge_gmail=purge_gmail,
+        export_path=export_path,
+        export_format=export_format,
+        console=console,
+        noun="banni",
+        targets_title="Alias bannis par compte iCloud",
     )
-
-    accounts_by_name: dict[str, AccountConfig] = {}
-    aliases_by_account: dict[str, dict[str, dict]] = {}
-    records_by_account: dict[str, list[dict]] = {}
-    for account, records, error in results:
-        accounts_by_name[account.name] = account
-        if error:
-            console.log(f"({account.name}) [yellow]⚠ liste indisponible : {error}[/]")
-            continue
-        alias_map = {
-            (record.get("hme") or "").lower(): record
-            for record in records
-            if record.get("hme")
-        }
-        aliases_by_account[account.name] = alias_map
-        records_by_account[account.name] = records
-        console.log(f"({account.name}) {len(records)} alias au total.")
-
-    # 4) Map banned aliases to their accounts and report per account. Each alias
-    #    carries the action of the signal it matched (delete already won ties).
-    banned_by_account, orphans = map_banned_to_accounts(candidates, aliases_by_account)
-
-    def action_for(record: dict) -> str:
-        return candidate_action.get((record.get("hme") or "").lower(), "deactivate")
-
-    console.rule("[bold #45768c]Alias bannis par compte iCloud")
-    if not banned_by_account:
-        console.log(
-            "[#45768c]Aucun des alias bannis ne correspond à un compte iCloud "
-            "configuré.[/]"
-        )
-    for name, records in banned_by_account.items():
-        table = Table(
-            title=f"Compte iCloud « {name} » — {len(records)} alias banni(s)"
-        )
-        table.add_column("Label")
-        table.add_column("Alias")
-        table.add_column("État")
-        table.add_column("Action")
-        for record in records:
-            state = "[#45768c]actif[/]" if record.get("isActive") else "[dim]inactif[/]"
-            action_label = (
-                "[red]désact. + suppr.[/]"
-                if action_for(record) == "delete"
-                else "désact."
-            )
-            table.add_row(
-                str(record.get("label", "")),
-                str(record.get("hme", "")),
-                state,
-                action_label,
-            )
-        console.print(table)
-    if orphans:
-        console.log(
-            f"[yellow]{len(orphans)} adresse(s) bannie(s) sans compte iCloud "
-            f"configuré (ignorée(s)) : {', '.join(sorted(orphans))}[/]"
-        )
-
-    # Export the flagged aliases (what would be deactivated/deleted) if requested.
-    # Built from the mapping so the list is complete regardless of cookie state.
-    if export_path:
-        flagged_rows = build_flagged_rows(banned_by_account, action_for)
-        _write_flagged_export(flagged_rows, export_path, export_format, console)
-
-    if not banned_by_account:
-        return
-
-    # 5) Per account: probe deactivation capability, then (confirm →) act, one
-    #    action group ("deactivate"/"delete") at a time.
-    console.rule("[bold #45768c]Vérification & action")
-    total_done = total_failed = total_skipped = 0
-    # Aliases actually deleted (or, in dry-run, that would be) — used to purge
-    # their Gmail messages when purge_gmail is on.
-    deleted_aliases: set[str] = set()
-
-    for name, banned in banned_by_account.items():
-        account = accounts_by_name[name]
-        async with RichHideMyEmail(
-            cookie_file=account.cookie_file,
-            account_name=account.name,
-            console=console,
-        ) as hme:
-            if not hme._ensure_cookie_configured():
-                total_skipped += len(banned)
-                continue
-
-            verdict, method = await probe_account_deactivation(
-                hme, records_by_account.get(name, [])
-            )
-            if verdict == "unauthorized":
-                console.log(
-                    f"({name}) [bold red]✗ Impossible d'agir avec ces cookies[/] "
-                    "(session iCloud périmée). Réexporte des cookies frais depuis "
-                    "icloud.com/settings puis relance."
-                )
-                total_skipped += len(banned)
-                continue
-            if verdict == "unknown":
-                console.log(
-                    f"({name}) [yellow]⚠ Capacité de désactivation non confirmée "
-                    "(sonde ambiguë). On tentera quand même après confirmation.[/]"
-                )
-            else:
-                console.log(f"({name}) [#45768c]✓ Cookies OK[/] (test : {method}).")
-
-            # Process each action group separately so appeal aliases can be
-            # deactivated while on-hold aliases are deactivated + deleted.
-            for group_action in ("deactivate", "delete"):
-                group = [r for r in banned if action_for(r) == group_action]
-                if not group:
-                    continue
-                delete_mode = group_action == "delete"
-
-                # In delete mode every alias is processed (inactive ones deleted
-                # directly); otherwise only the still-active ones need it.
-                if delete_mode:
-                    to_process = list(group)
-                else:
-                    to_process = [r for r in group if r.get("isActive")]
-                    already_inactive = len(group) - len(to_process)
-                    if already_inactive:
-                        console.log(
-                            f"({name}) {already_inactive} alias banni(s) déjà "
-                            "inactif(s) — ignoré(s)."
-                        )
-                        total_skipped += already_inactive
-                if not to_process:
-                    continue
-
-                if dry_run:
-                    verb = "désactivés + supprimés" if delete_mode else "désactivés"
-                    console.log(
-                        f"({name}) [#45768c]Dry-run[/] : {len(to_process)} alias "
-                        f"seraient {verb} (aucune action réelle)."
-                    )
-                    if delete_mode:
-                        deleted_aliases.update(
-                            (r.get("hme") or "").lower() for r in to_process
-                        )
-                    continue
-
-                if delete_mode:
-                    question = (
-                        f"Désactiver ET SUPPRIMER définitivement (irréversible) les "
-                        f"{len(to_process)} alias banni(s) du compte « {name} » ?"
-                    )
-                else:
-                    question = (
-                        f"Désactiver les {len(to_process)} alias banni(s) actif(s) du "
-                        f"compte « {name} » ?"
-                    )
-                proceed = assume_yes or Confirm.ask(
-                    question, default=False, console=console
-                )
-                if not proceed:
-                    console.log(f"({name}) Ignoré (pas de confirmation).")
-                    total_skipped += len(to_process)
-                    continue
-
-                done, failed = await _process_records(
-                    hme, to_process, console, name, group_action
-                )
-                total_done += len(done)
-                total_failed += len(failed)
-                if delete_mode:
-                    deleted_aliases.update(alias.lower() for alias in done)
-
-    console.rule("[bold #45768c]Résumé")
-    console.log(
-        f"[bold]Traités : {total_done}  |  "
-        f"Ignorés : {total_skipped}  |  Échecs : {total_failed}[/]"
-    )
-
-    # 6) Optionally purge the Gmail messages of the aliases we deleted.
-    if purge_gmail:
-        await _run_gmail_purge(
-            gmail_accounts, deleted_aliases, dry_run, assume_yes, console
-        )

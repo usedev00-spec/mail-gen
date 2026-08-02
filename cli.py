@@ -32,7 +32,7 @@ from main import (
     resolve_effective_limits,
     suggested_duration_hours,
 )
-from banscan import BAN_SIGNAL_KEYS, run_ban_check
+from banscan import BAN_SIGNAL_KEYS, run_ban_check, run_delete_list
 import licensing
 
 console = Console(style=TEXT_COLOR)
@@ -185,6 +185,7 @@ MENU_ITEMS = [
     ("1", "Generate", "Create new HideMyEmail aliases"),
     ("2", "List", "Browse & export existing aliases"),
     ("3", "Ban check", "Détecter les alias bannis Amazon & les désactiver"),
+    ("4", "Delete list", "Supprimer une liste d'alias depuis un fichier (.txt/.csv)"),
     ("0", "Quit", "Exit the program"),
 ]
 
@@ -525,6 +526,73 @@ def interactive_ban_check() -> None:
     )
 
 
+def interactive_delete_list() -> None:
+    console.rule(f"[bold {ACCENT}]Supprimer une liste d'alias")
+    console.print(
+        "[dim]Désactive puis supprime définitivement les alias listés dans un fichier "
+        "[bold].txt[/] (une adresse par ligne) ou [bold].csv[/] (colonne « alias » — voir "
+        "delete_list.example.csv). Chaque alias est rattaché au compte iCloud qui le "
+        "possède ; ceux introuvables sont ignorés et signalés. ⚠️ Irréversible.[/]\n"
+    )
+
+    input_path = Prompt.ask(
+        "Chemin du fichier (.txt ou .csv)",
+        default="delete_list.csv",
+        console=console,
+    )
+
+    dry_run = Confirm.ask(
+        "Mode simulation (dry-run — rapport, aucune suppression) ?",
+        default=True,
+        console=console,
+    )
+
+    purge_gmail = Confirm.ask(
+        "Aussi nettoyer Gmail : déplacer vers la corbeille tous les mails reçus sur "
+        "les alias supprimés ? (récupérables ~30 j)",
+        default=False,
+        console=console,
+    )
+
+    accounts_file, account_names, cookie_file, account_name = pick_accounts()
+
+    mode_label = (
+        "simulation (dry-run)"
+        if dry_run
+        else "suppression définitive (avec confirmation par compte)"
+    )
+    summary_panel(
+        "Review",
+        [
+            ("Fichier", input_path),
+            ("Mode", mode_label),
+            ("Nettoyage Gmail", "oui (corbeille)" if purge_gmail else "non"),
+            ("Accounts file", accounts_file or "—"),
+            (
+                "Account(s)",
+                account_name
+                or (
+                    (", ".join(account_names) if account_names else "all")
+                    if accounts_file
+                    else "default"
+                ),
+            ),
+        ],
+    )
+
+    run_async(
+        run_delete_list(
+            input_path,
+            accounts_file=accounts_file,
+            account_names=account_names,
+            cookie_file=cookie_file,
+            account_name=account_name,
+            dry_run=dry_run,
+            purge_gmail=purge_gmail,
+        )
+    )
+
+
 def run_interactive_menu() -> None:
     console.clear()
     licensing.require_license(console)
@@ -543,6 +611,8 @@ def run_interactive_menu() -> None:
                 interactive_list()
             elif choice == "3":
                 interactive_ban_check()
+            elif choice == "4":
+                interactive_delete_list()
         except KeyboardInterrupt:
             console.print("\n[yellow]Cancelled — returning to menu.[/]")
 

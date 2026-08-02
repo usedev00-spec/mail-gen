@@ -41,5 +41,6 @@ GUIDE-CLES-PRIVE.md
 .env
 .env.*
 
-# Generated CSV exports
+# Generated CSV exports (real data). Only the delete-list template is tracked.
 *.csv
+!delete_list.example.csv

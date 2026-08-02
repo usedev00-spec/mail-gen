@@ -20,6 +20,7 @@
 - [Lister / exporter tes alias](#-lister--exporter-tes-alias)
 - [Plusieurs comptes iCloud](#-plusieurs-comptes-icloud)
 - [Détecter, désactiver & supprimer les alias bannis Amazon](#-détecter-désactiver--supprimer-les-alias-bannis-amazon)
+- [Supprimer une liste d'alias depuis un fichier](#-supprimer-une-liste-dalias-depuis-un-fichier)
 - [Mettre à jour](#-mettre-à-jour-le-projet)
 - [FAQ](#-faq)
 - [Annexe : tout installer de zéro (macOS & Windows)](#-annexe--tout-installer-de-zéro-macos--windows)
@@ -127,17 +128,19 @@ Tu verras ceci :
 │                                                          │
 ╰────────────────────────────────────────────────────────╯
 ╭──────────────────────── Menu ────────────────────────╮
-│   [1]    Generate    Create new HideMyEmail aliases    │
-│   [2]    List        Browse & export existing aliases  │
-│   [3]    Ban check   Détecter/désactiver les alias bannis│
-│   [0]    Quit        Exit the program                  │
+│   [1]    Generate     Create new HideMyEmail aliases   │
+│   [2]    List         Browse & export existing aliases │
+│   [3]    Ban check    Détecter/désactiver les alias bannis│
+│   [4]    Delete list  Supprimer une liste d'alias (fichier)│
+│   [0]    Quit         Exit the program                 │
 ╰───────────────────────────────────────────────────────╯
-Select an option [1/2/3/0] (1):
+Select an option [1/2/3/4/0] (1):
 ```
 
 - **1** → Générer de nouveaux alias
 - **2** → Lister / exporter tes alias existants
 - **3** → Détecter les alias bannis Amazon et les désactiver/supprimer
+- **4** → Supprimer une liste d'alias fournie dans un fichier `.txt`/`.csv`
 - **0** → Quitter
 
 Tape le numéro et appuie sur **Entrée**.
@@ -443,6 +446,50 @@ Le déroulé du menu (par défaut : mode `appeal`, dry-run, tous les comptes du 
 > ⚠️ Si un compte affiche « Impossible d'agir avec ces cookies », c'est que sa session
 > iCloud est périmée : réexporte des cookies frais (voir
 > [Récupérer ton cookie iCloud](#-récupérer-ton-cookie-icloud)) puis relance.
+
+---
+
+## 🗑️ Supprimer une liste d'alias depuis un fichier
+
+Choisis **`4`** (Delete list) dans le menu pour **désactiver puis supprimer définitivement**
+une liste d'alias que **tu fournis dans un fichier**. Chaque adresse est rattachée
+automatiquement au compte iCloud qui la possède (croisement avec la liste Hide My Email de
+chaque compte) ; les adresses introuvables sont ignorées et signalées. ⚠️ **Irréversible.**
+
+Pratique pour reprendre un export : lance un ban check en **dry-run** avec `--export`
+(fichier `.txt`/`.csv`), garde les lignes que tu veux, puis réinjecte le fichier ici.
+
+**Format du fichier — `.txt` ou `.csv` :**
+
+- **`.txt`** : une adresse d'alias **par ligne**. Les lignes vides et celles commençant par
+  `#` (commentaires) sont ignorées.
+  ```text
+  abcd1234@icloud.com
+  efgh5678@icloud.com
+  ```
+- **`.csv`** : la **colonne des alias** est repérée par son en-tête (`alias`, `email`, `hme`,
+  `hide my email`, `adresse`, `mail`…). Les autres colonnes sont ignorées ; s'il n'y a pas
+  d'en-tête reconnu, la première cellule ressemblant à une adresse est prise sur chaque
+  ligne. Un modèle est fourni : **[`delete_list.example.csv`](./delete_list.example.csv)**.
+  ```csv
+  Alias,Label,Compte
+  abcd1234@icloud.com,Amazon FR,iPhone1
+  efgh5678@icloud.com,Amazon DE,iPhone2
+  ```
+
+> ✅ Les **exports de l'outil se réinjectent directement** : l'export du ban check (colonne
+> `Alias`), l'export de la liste (colonne `Email`), ou une simple liste `.txt`. Les adresses
+> sont dédupliquées et insensibles à la casse ; un éventuel BOM en tête de fichier est géré.
+
+**Le déroulé du menu :**
+
+1. **Chemin du fichier** (`.txt` ou `.csv`).
+2. **Mode simulation (dry-run) ?** — `y` par défaut : il t'affiche, compte par compte, ce
+   qui *serait* supprimé, sans rien toucher.
+3. **Aussi nettoyer Gmail ?** — déplacer vers la corbeille Gmail tous les mails reçus sur
+   les alias supprimés (voir la section ban ci-dessus). `n` par défaut.
+4. **Quels comptes ?** — comme ailleurs (numéros, `all`, ou `0`).
+5. Récap, vérification des cookies, puis **confirmation par compte** avant de supprimer.
 
 ---
 

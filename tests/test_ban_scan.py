@@ -20,6 +20,7 @@ from banscan import (
     extract_recipient_addresses,
     find_account_messages,
     find_alias_message_uids,
+    load_alias_list,
     load_gmail_config,
     map_banned_to_accounts,
     resolve_ban_signals,
@@ -594,6 +595,51 @@ class PurgeAccountTest(unittest.TestCase):
         with mock.patch("banscan.imaplib.IMAP4_SSL") as ctor:
             self.assertEqual(find_account_messages({"address": "g", "app_password": "p"}, set()), [])
         ctor.assert_not_called()
+
+
+class LoadAliasListTest(unittest.TestCase):
+    def _write(self, suffix, content):
+        fd, path = tempfile.mkstemp(suffix=suffix)
+        os.close(fd)
+        self.addCleanup(os.unlink, path)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+        return path
+
+    def test_txt_one_per_line_dedupes_and_lowercases(self):
+        path = self._write(
+            ".txt",
+            "# ma liste\nAB.CD@icloud.com\n\nef.gh@icloud.com\nab.cd@ICLOUD.com\n",
+        )
+        self.assertEqual(
+            load_alias_list(path), ["ab.cd@icloud.com", "ef.gh@icloud.com"]
+        )
+
+    def test_csv_ban_export_format_alias_column(self):
+        # Mirrors the ban --export CSV: Compte,Label,Alias,État
+        path = self._write(
+            ".csv",
+            "Compte,Label,Alias,État\niPhone1,Amazon A,a@icloud.com,actif\n"
+            "iPhone2,Amazon C,c@icloud.com,inactif\n",
+        )
+        self.assertEqual(load_alias_list(path), ["a@icloud.com", "c@icloud.com"])
+
+    def test_csv_list_export_format_email_column(self):
+        # Mirrors the list --export CSV: Account,Label,Email,Created,IsActive
+        path = self._write(
+            ".csv",
+            "Account,Label,Email,Created,IsActive\n"
+            "main,shop,x@icloud.com,2026-01-01,True\n",
+        )
+        self.assertEqual(load_alias_list(path), ["x@icloud.com"])
+
+    def test_csv_without_recognized_header_uses_first_email_cell(self):
+        path = self._write(".csv", "z@icloud.com,note\nw@icloud.com,other\n")
+        self.assertEqual(load_alias_list(path), ["z@icloud.com", "w@icloud.com"])
+
+    def test_missing_file_raises(self):
+        with self.assertRaises(ValueError):
+            load_alias_list("/no/such/file_xyz.csv")
 
 
 if __name__ == "__main__":
