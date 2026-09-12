@@ -52,6 +52,40 @@ OVERRIDE_RISK_WARNING = (
     "temporary locks, or other restrictions on the iCloud account."
 )
 
+# Tokens Apple's error bodies carry for a stale/rejected session vs. throttling.
+# Mirrors RichHideMyEmail._format_error_message so the connection check
+# classifies failures the same way the generate/list flows report them.
+_AUTH_ERROR_TOKENS = ("global_session", "unauthorized")
+_RATE_LIMIT_TOKENS = ("rate limit", "too many", "throttl", "http 429")
+
+
+def _classify_connection_error(response) -> str:
+    """Map a failed API response to a connection status category.
+
+    Returns ``"expired"`` (cookies stale/rejected), ``"rate_limited"`` (Apple
+    throttling) or ``"error"`` (network/transport/unknown).
+    """
+    try:
+        blob = json.dumps(response, default=str).lower()
+    except (TypeError, ValueError):
+        blob = str(response).lower()
+
+    if any(token in blob for token in _AUTH_ERROR_TOKENS):
+        return "expired"
+    if any(token in blob for token in _RATE_LIMIT_TOKENS):
+        return "rate_limited"
+    return "error"
+
+
+# Status → (rich color, short label) for the connection-check summary table.
+CONNECTION_STATUS_DISPLAY: dict[str, tuple[str, str]] = {
+    "ok": ("green", "✓ working"),
+    "no_cookie": ("yellow", "⚠ no cookie"),
+    "expired": ("red", "✗ expired"),
+    "rate_limited": ("yellow", "⏳ rate-limited"),
+    "error": ("red", "✗ error"),
+}
+
 
 @dataclass
 class AccountConfig:
@@ -942,6 +976,60 @@ class RichHideMyEmail(HideMyEmail):
 
         return rows
 
+    async def check_connection(self) -> dict:
+        """Non-destructively check whether this account's cookies still work.
+
+        Makes a single read-only ``list_email()`` call — the same request the
+        List feature uses — and classifies the outcome, so it never creates,
+        modifies or deletes anything. Returns a dict with:
+
+        - ``ok`` (bool): the session is fully working.
+        - ``status`` (str): one of ``CONNECTION_STATUS_DISPLAY``' keys
+          (``"ok"``, ``"no_cookie"``, ``"expired"``, ``"rate_limited"``,
+          ``"error"``).
+        - ``detail`` (str): a short human-readable message.
+        - ``total`` / ``active`` (int): alias counts when the call succeeded.
+        - ``mail_host_resolved`` (bool): whether Apple confirmed this account's
+          mail host (a stale/partial session can leave this False).
+        """
+        result = {
+            "ok": False,
+            "status": "error",
+            "detail": "",
+            "total": 0,
+            "active": 0,
+            "mail_host_resolved": self.mail_host_resolved,
+        }
+
+        if not self.cookies:
+            result["status"] = "no_cookie"
+            result["detail"] = self.cookie_error or (
+                f"No iCloud cookie configured in {self._cookie_reference()}."
+            )
+            return result
+
+        response = await self.list_email()
+
+        if isinstance(response, dict) and response.get("success"):
+            all_hme = response.get("result", {}).get("hmeEmails", []) or []
+            active = sum(1 for row in all_hme if row.get("isActive"))
+            result.update(
+                ok=True,
+                status="ok",
+                detail=f"{len(all_hme)} alias(es), {active} active",
+                total=len(all_hme),
+                active=active,
+            )
+            return result
+
+        result["detail"] = (
+            self._format_error_message(response)
+            if isinstance(response, dict)
+            else "Empty response from Apple"
+        )
+        result["status"] = _classify_connection_error(response)
+        return result
+
 
 class MultiAccountStatusBoard:
     """Shared live countdown for multiple accounts generating in parallel.
@@ -1026,6 +1114,48 @@ async def list_account(
     ) as hme:
         rows = await hme.list(active, search, show_table=False)
         return account, rows
+
+
+async def check_account(
+    account: AccountConfig,
+    console: Console,
+) -> tuple[AccountConfig, dict]:
+    async with RichHideMyEmail(
+        cookie_file=account.cookie_file,
+        account_name=account.name,
+        console=console,
+    ) as hme:
+        result = await hme.check_connection()
+        return account, result
+
+
+def build_connection_table(
+    results: list[tuple[AccountConfig, dict]],
+) -> Table:
+    table = Table(title="Cookie / session check")
+    table.add_column("Account")
+    table.add_column("Cookie file", style="dim")
+    table.add_column("Status")
+    table.add_column("Aliases", justify="right")
+    table.add_column("Mail host")
+    table.add_column("Detail")
+
+    for account, result in results:
+        color, label = CONNECTION_STATUS_DISPLAY.get(
+            result["status"], ("red", result["status"])
+        )
+        aliases = str(result["total"]) if result["ok"] else "—"
+        host = "resolved" if result["mail_host_resolved"] else "default"
+        table.add_row(
+            account.name,
+            account.cookie_file,
+            f"[{color}]{label}[/]",
+            aliases,
+            host,
+            result["detail"],
+        )
+
+    return table
 
 
 async def generate_with_accounts_file(
@@ -1201,6 +1331,57 @@ async def list_emails(
         account_name=account_name,
     ) as hme:
         await hme.list(active, search, export)
+
+
+async def check_connections(
+    accounts_file: Optional[str] = None,
+    cookie_file: Optional[str] = None,
+    account_name: Optional[str] = None,
+    account_names: Optional[builtins.list[str]] = None,
+) -> None:
+    """Check, non-destructively, whether the selected accounts' cookies work.
+
+    Probes each account in parallel with a single read-only ``list_email()``
+    call and prints a summary table (status, alias count, mail host). Accepts
+    the same account-selection shapes as ``generate``/``list_emails``: an
+    accounts file (optionally narrowed to ``account_names``), a single named
+    account with its ``cookie_file``, or the default cookie file.
+    """
+    console = Console(style=TEXT_COLOR)
+
+    if accounts_file:
+        try:
+            accounts = load_accounts_config(accounts_file)
+            if account_names:
+                accounts = filter_accounts(accounts, account_names)
+        except ValueError as exc:
+            console.log(f"[bold red][ERR][/] - {exc}")
+            return
+    else:
+        accounts = [
+            AccountConfig(
+                name=account_name or "default",
+                cookie_file=cookie_file or DEFAULT_COOKIE_FILE,
+            )
+        ]
+
+    console.log(
+        f"Checking {len(accounts)} account(s) with a read-only probe "
+        "(no aliases are created, changed or deleted)."
+    )
+
+    results = await asyncio.gather(
+        *(check_account(account, console) for account in accounts)
+    )
+
+    console.print(build_connection_table(results))
+
+    ok_count = sum(1 for _, result in results if result["ok"])
+    total = len(results)
+    color = ACCENT_COLOR if ok_count == total else "yellow"
+    console.log(
+        f"[bold {color}]{ok_count}/{total}[/] account(s) have working cookies."
+    )
 
 
 if __name__ == "__main__":

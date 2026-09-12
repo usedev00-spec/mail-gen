@@ -21,6 +21,7 @@
 - [Plusieurs comptes iCloud](#-plusieurs-comptes-icloud)
 - [Détecter, désactiver & supprimer les alias bannis Amazon](#-détecter-désactiver--supprimer-les-alias-bannis-amazon)
 - [Supprimer une liste d'alias depuis un fichier](#-supprimer-une-liste-dalias-depuis-un-fichier)
+- [Vérifier tes cookies / sessions](#-vérifier-tes-cookies--sessions)
 - [Mettre à jour](#-mettre-à-jour-le-projet)
 - [FAQ](#-faq)
 - [Annexe : tout installer de zéro (macOS & Windows)](#-annexe--tout-installer-de-zéro-macos--windows)
@@ -132,15 +133,17 @@ Tu verras ceci :
 │   [2]    List         Browse & export existing aliases │
 │   [3]    Ban check    Détecter/désactiver les alias bannis│
 │   [4]    Delete list  Supprimer une liste d'alias (fichier)│
+│   [5]    Check cookies Tester quels comptes ont des cookies valides│
 │   [0]    Quit         Exit the program                 │
 ╰───────────────────────────────────────────────────────╯
-Select an option [1/2/3/4/0] (1):
+Select an option [1/2/3/4/5/0] (1):
 ```
 
 - **1** → Générer de nouveaux alias
 - **2** → Lister / exporter tes alias existants
 - **3** → Détecter les alias bannis Amazon et les désactiver/supprimer
 - **4** → Supprimer une liste d'alias fournie dans un fichier `.txt`/`.csv`
+- **5** → Vérifier quels comptes ont encore des cookies iCloud valides
 - **0** → Quitter
 
 Tape le numéro et appuie sur **Entrée**.
@@ -490,6 +493,49 @@ Pratique pour reprendre un export : lance un ban check en **dry-run** avec `--ex
    les alias supprimés (voir la section ban ci-dessus). `n` par défaut.
 4. **Quels comptes ?** — comme ailleurs (numéros, `all`, ou `0`).
 5. Récap, vérification des cookies, puis **confirmation par compte** avant de supprimer.
+
+---
+
+## 🩺 Vérifier tes cookies / sessions
+
+Choisis **`5`** (Check cookies) pour savoir, en un coup d'œil, **quels comptes ont encore des
+cookies iCloud valides** — avant de lancer une génération ou un ban check et de tomber sur des
+erreurs `session expired` en plein milieu.
+
+Le test est **en lecture seule** : il fait, pour chaque compte sélectionné, **un seul appel
+`list` (comme le menu « List »)**, puis classe le résultat. **Rien n'est créé, modifié ni
+supprimé.** Les comptes sont testés **en parallèle**, donc c'est rapide même avec plusieurs
+cookies.
+
+**Le déroulé du menu :**
+
+1. **Quels comptes ?** — comme ailleurs (numéros, `all`, `0` pour le cookie par défaut).
+2. L'outil affiche un tableau récapitulatif :
+
+```text
+                             Cookie / session check
+┏━━━━━━━━━┳━━━━━━━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━┓
+┃ Account ┃ Cookie file    ┃ Status    ┃ Aliases ┃ Mail host ┃ Detail          ┃
+┡━━━━━━━━━╇━━━━━━━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━┩
+│ iPhone1 │ cookies/1.txt  │ ✓ working │       8 │ resolved  │ 8 alias(es), 6… │
+│ iPhone2 │ cookies/2.txt  │ ✗ expired │       — │ default   │ Apple rejected… │
+└─────────┴────────────────┴───────────┴─────────┴───────────┴─────────────────┘
+1/2 account(s) have working cookies.
+```
+
+**Les statuts possibles :**
+
+- **`✓ working`** — les cookies sont valides ; la colonne **Aliases** montre le nombre d'alias
+  du compte (bon signe supplémentaire que la session est complète).
+- **`⚠ no cookie`** — aucun cookie n'est configuré / le fichier est vide ou manquant.
+- **`✗ expired`** — Apple a rejeté la session : **réexporte des cookies frais** depuis
+  [icloud.com/settings](https://www.icloud.com/settings/) (voir la section « Récupérer ton cookie »).
+- **`⏳ rate-limited`** — Apple limite temporairement les requêtes ; réessaie dans ~30 min.
+- **`✗ error`** — problème réseau/transport ou réponse inattendue (le détail est affiché).
+
+> ℹ️ La colonne **Mail host** indique si Apple a confirmé le « partition » mail du compte
+> (`resolved`) ou si l'outil est retombé sur la valeur par défaut (`default`) — utile si un
+> listing te paraît incomplet.
 
 ---
 

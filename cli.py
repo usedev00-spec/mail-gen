@@ -23,6 +23,7 @@ from main import (
     OVERRIDE_RISK_WARNING,
     TEXT_COLOR,
     analyze_plan,
+    check_connections,
     count_generated_today,
     daily_emails_filename,
     format_duration,
@@ -186,6 +187,7 @@ MENU_ITEMS = [
     ("2", "List", "Browse & export existing aliases"),
     ("3", "Ban check", "Détecter les alias bannis Amazon & les désactiver"),
     ("4", "Delete list", "Supprimer une liste d'alias depuis un fichier (.txt/.csv)"),
+    ("5", "Check cookies", "Test which accounts' cookies/sessions still work"),
     ("0", "Quit", "Exit the program"),
 ]
 
@@ -593,6 +595,43 @@ def interactive_delete_list() -> None:
     )
 
 
+def interactive_check_connection() -> None:
+    console.rule(f"[bold {ACCENT}]Check cookies / session")
+    console.print(
+        "[dim]Runs a read-only probe against each selected account to confirm "
+        "its iCloud cookies are still valid. Nothing is created, changed or "
+        "deleted — expired cookies just need to be re-exported from "
+        "https://www.icloud.com/settings/.[/]\n"
+    )
+
+    accounts_file, account_names, cookie_file, account_name = pick_accounts()
+
+    summary_panel(
+        "Review",
+        [
+            ("Accounts file", accounts_file or "—"),
+            (
+                "Account(s)",
+                account_name
+                or (
+                    (", ".join(account_names) if account_names else "all")
+                    if accounts_file
+                    else "default"
+                ),
+            ),
+        ],
+    )
+
+    run_async(
+        check_connections(
+            accounts_file=accounts_file,
+            cookie_file=cookie_file,
+            account_name=account_name,
+            account_names=account_names,
+        )
+    )
+
+
 def run_interactive_menu() -> None:
     console.clear()
     licensing.require_license(console)
@@ -613,6 +652,8 @@ def run_interactive_menu() -> None:
                 interactive_ban_check()
             elif choice == "4":
                 interactive_delete_list()
+            elif choice == "5":
+                interactive_check_connection()
         except KeyboardInterrupt:
             console.print("\n[yellow]Cancelled — returning to menu.[/]")
 
